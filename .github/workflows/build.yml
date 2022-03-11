@@ -1,0 +1,28 @@
+name: build
+on: push
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y install libmemtailor-dev libmathic-dev libtbb-dev \
+                                  libgtest-dev
+      - name: Build
+        run: |
+          ./autogen.sh
+          ./configure GTEST_PATH=/usr/src/gtest
+          make
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install dependencies
+        run: |
+          brew install automake
+      - name: Build
+        run: |
+          ./autogen.sh
+          ./configure
+          make
