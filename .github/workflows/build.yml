@@ -26,5 +26,5 @@ jobs:
       - name: Build
         run: |
           ./autogen.sh
-          ./configure
+          ./configure GTEST_PATH=/usr/local/Cellar/googletest/1.11.0/include/googletest/googletest/src
           make
