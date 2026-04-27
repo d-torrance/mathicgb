@@ -11,8 +11,8 @@ jobs:
       matrix:
         release:
           - bullseye
-          - bookworm
-          - trixie
+#          - bookworm
+#          - trixie
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
