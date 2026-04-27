@@ -1,0 +1,46 @@
+name: Build Debian packages
+on:
+  push:
+
+jobs:
+  deb:
+    runs-on: ${{ matrix.os }}
+    container: debian:${{ matrix.release }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release:
+          - bullseye
+          - bookworm
+          - trixie
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y autoconf automake git devscripts libgtest-dev \
+            libmathic-dev libmemtailor-dev libtbb-dev pkgconf libtool make
+      - name: Clone repository
+        run: |
+          git clone https://salsa.debian.org/math-team/mathicgb
+          cd mathicgb
+          git checkout debian/${{ matrix.release }}
+      - name: Build package
+        run: |
+          cd mathicgb
+          uscan --verbose --rename --force-download
+          dpkg-buildpackage
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mathicgb-debian-${{ matrix.release }}-${{ matrix.os }}
+          path: |
+            *.buildinfo
+            *.changes
+            *.deb
+            *.dsc
+            *.tar.*
+
