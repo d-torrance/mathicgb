@@ -23,9 +23,32 @@ Clone instead, and leave your working tree alone.
 
 `autogen.sh` runs `autoreconf --install`, so it wants autoconf, automake,
 libtool and pkg-config on PATH.  On macOS with Homebrew that is
-`brew install autoconf automake libtool pkg-config`, and if `configure` cannot
-find memtailor, mathic or TBB, set `PKG_CONFIG_PATH` to the directory holding
-their `.pc` files.
+`brew install autoconf automake libtool pkg-config`.
+
+memtailor and mathic are found by `AC_CHECK_HEADER` and `AC_SEARCH_LIBS`, not
+by pkg-config, so `PKG_CONFIG_PATH` does nothing for them -- they want
+`CPPFLAGS` and `LDFLAGS`.  Only TBB goes through pkg-config.  If either is
+installed outside the compiler's default search path:
+
+    MT=$(brew --prefix memtailor)
+    MC=$(brew --prefix mathic)
+    ./configure ... \
+      CPPFLAGS="-I$MT/include -I$MC/include" \
+      LDFLAGS="-L$MT/lib -L$MC/lib"
+
+Use `brew --prefix <pkg>` rather than writing `/opt/homebrew` by hand: a
+keg-only formula is not symlinked into `/opt/homebrew/include` at all.  And the
+paths end in `/include` and `/lib` -- `-I/opt/homebrew` alone finds nothing.
+
+`configure` prints the same message, `memtailor is required`, whether the
+header check or the link check failed, so it does not say which half broke.
+`config.log` does:
+
+    grep -A5 "checking for memtailor.h" config.log
+    grep -A5 "checking for library containing libmemtailorIsPresent" config.log
+
+A passing run records `ac_cv_header_memtailor_h=yes` and
+`ac_cv_search_libmemtailorIsPresent=-lmemtailor`.
 
 Four serial builds, one per variant.  Variant bits: 1 = index `mEntries`
 directly instead of via the restrict local, 2 = plain loop instead of the
@@ -38,9 +61,10 @@ unrolling, 4 = Duff's-device goto.  Variant 0 is the shipped code.
        make mgb -j)
     done
 
-`make mgb` builds the library and the tool and skips the test suite, so gtest is
-not needed.  Note that `CXXFLAGS=` on the `configure` line replaces the default
-flags rather than adding to them, which is why `-O2` is written out explicitly.
+`make mgb` builds the library and the tool and skips the test suite, so gtest
+is not needed.  Note that `CXXFLAGS=` on the `configure` line replaces the
+default flags rather than adding to them, which is why `-O2` is written out
+explicitly.
 
 One TBB build, for section 1 only:
 
@@ -48,13 +72,23 @@ One TBB build, for section 1 only:
     (cd b/tbb && ../../configure --with-tbb=yes CXXFLAGS="-O2" >/dev/null &&
      make mgb -j)
 
-Confirm before trusting any number.  The four serial binaries must have
-**distinct** object files and produce **identical** output:
+Confirm before trusting any number, by checking that the variants really did
+reach the compiler and that they all still compute the same answer:
 
     for V in 0 1 2 4; do md5sum b/v$V/src/mathicgb/F4MatrixReducer.o; done
 
 Use the `.o`, not the `.lo` -- libtool's `.lo` is a text stub and is byte
 identical across all four variants, so checking it proves nothing.
+
+If **all four** object files match, the `-D` never reached the compiler and the
+builds are identical; check `grep -o 'MATHICGB_BENCH_VARIANT=[0-9]' config.log`
+in one of the build directories.  Anything short of that is fine, and a
+collision between particular variants is a result rather than a fault: on
+clang/arm64 variants 0 and 1 come out byte identical, because the compiler
+emits the same code with and without the restrict local.  That is a stronger
+answer than a timing run -- where the object files match there is nothing to
+time.  GCC 11.4 on x86-64 emits *different* code for those two, of the same
+size, that times within +-1.4%.
 
     mkdir -p run && cp examples/*.ideal run/
     cd run && for V in 0 1 2 4; do rm -f hyclic8-101-trimmed.gb
@@ -125,9 +159,9 @@ means the compiler did the work, not that unrolling is worthless:
 
     objdump -d b/v2/src/mathicgb/F4MatrixReducer.o | less   # otool -tv on macOS
 
-`bench.py` reports CPU and wall time only, so it is portable as-is.  If you add
-memory reporting, note that `resource.getrusage` gives `ru_maxrss` in bytes on
-macOS and in kilobytes on Linux.
+`bench.py` reports CPU and wall time only, so it is portable as-is.  If you
+add memory reporting, note that `resource.getrusage` gives `ru_maxrss` in
+bytes on macOS and in kilobytes on Linux.
 
 ## 3. The yang1 baseline discrepancy
 
