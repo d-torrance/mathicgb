@@ -40,6 +40,7 @@ streaming-interface paths.  What follows is what it did not reach.
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
+| 23 | five unused macros in `stdinc.h`, four of which do not compile | open |
 
 ---
 
@@ -935,6 +936,67 @@ collapse to a comment saying the constructor already handled it.  The second is
 more honest about what the code does.  Low priority -- there is no user-visible
 symptom -- but it is a trap for anyone changing how the default is chosen,
 which item 21 might well involve.
+
+## [OPEN] 23. Five unused macros in `stdinc.h`, four of which do not compile
+
+Found 2026-08-31 after removing `MATHICGB_RESTRICT`, which had exactly one use
+and lost it when the restrict local came out of `DenseRow::addRowMultiple`.
+Auditing its neighbours found five more with no uses at all:
+
+| macro | uses anywhere in `src/` |
+|---|---|
+| `MATHICGB_ASSUME_AND_MAY_EVALUATE` | 0 |
+| `MATHICGB_MUST_CHECK_RETURN_VALUE` | 0 |
+| `MATHICGB_NOTHROW` | 0 |
+| `MATHICGB_PURE` | 0 |
+| `MATHICGB_RETURN_NO_ALIAS` | 0 |
+
+Each is defined three times, once per compiler branch, so that is 15 lines.
+
+The part that makes this worth doing rather than merely tidy: **in the
+GCC/clang branch, all five are syntactically invalid.**  Four are written
+`__attribute__(x)` where the attribute syntax needs `__attribute__((x))`:
+
+    #define MATHICGB_RETURN_NO_ALIAS         __attribute__(malloc)
+    #define MATHICGB_NOTHROW                 __attribute__(nothrow)
+    #define MATHICGB_PURE                    __attribute__(pure)
+    #define MATHICGB_MUST_CHECK_RETURN_VALUE __attribute__(warn_unused_result)
+
+and the fifth has mismatched braces -- the `while(0)` is inside the `do`
+block rather than closing it:
+
+    #define MATHICGB_ASSUME_AND_MAY_EVALUATE(X) \
+      do {if(!(X)){MATHICGB_UNREACHABLE;}while(0)}
+
+Verified by expanding each one in a one-line translation unit against GCC
+11.4.  `MATHICGB_PURE` gives `error: expected '(' before 'pure'`, its three
+siblings give the same shape, and `MATHICGB_ASSUME_AND_MAY_EVALUATE` gives
+`error: expected primary-expression before '}' token`.  So the first use of
+any of them, on the compiler everyone actually builds with, is a build
+failure.  They have been that way since 2013 and nothing noticed, because
+nothing uses them.
+
+The MSVC branch spellings look right (`__declspec(noalias)` and friends) and
+the fallback branch defines them empty, which is harmless.  It is specifically
+the branch every current build takes that is broken.
+
+Deleting all five is the obvious call -- a macro that cannot compile is not a
+facility anyone can adopt, and if one is wanted later it is two lines to add
+correctly.  `stdinc.h` is installed, so this is nominally an API removal, with
+no ABI effect.
+
+Two near neighbours are **not** dead and should be left alone.  A naive grep
+for uses outside `stdinc.h` reports zero for both:
+
+- `MATHICGB_ASSUME` is used at `stdinc.h:137`, where it *is* the non-debug
+  definition of `MATHICGB_ASSERT`.  Removing it would break every one of the
+  898 assertions in release builds.
+- `MATHICGB_CONCATENATE` is used at `stdinc.h:159` by
+  `MATHICGB_CONCATENATE_AFTER_EXPANSION`, which `MATHICGB_UNIQUE` needs.
+
+Worth doing together with a pass over the file generally: the MSVC branch it
+is half made of cannot be reached, since `stdinc.h:6` has required C++17 since
+PR #60 and Windows is not supported.
 
 ## Considered and declined
 
