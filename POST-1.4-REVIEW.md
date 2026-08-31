@@ -27,7 +27,7 @@ streaming-interface paths.  What follows is what it did not reach.
 | 7 | `mgb matrix`'s unvalidated modulus | **DONE** — PR #74 |
 | 8 | three wrong or inconsistent strings in `src/cli`'s help text | **DONE** — PR #75 |
 | 9 | comments that mislead: `isPrime`'s precondition, obsolete compilers, stale URLs | **DONE** — PR #76 |
-| 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | open |
+| 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | **MEASURED** — F4 loop comments rewritten; TBB question narrowed |
 | 11 | remove `build/setup/make-Makefile.sh` | open |
 | 12 | remove `build/vs12` | open |
 | 13 | autotools `--enable-debug` | open |
@@ -391,41 +391,138 @@ GCC 13.3 with `-Dwith_tbb=OFF` (the only build that compiles the
 `mtbb::tick_count` this changes), and clang 18.1.3.  245 tests in 28 suites
 pass in each.
 
-## [OPEN] 10. Performance claims nobody has checked this decade
+## [MEASURED] 10. Performance claims nobody has checked this decade
 
-PR #65's own
-commit message records `yang1` at 20.7-21.8 s wall and 28-30 s user against
-14.2-14.4 s serial, while `hyclic8-101-trimmed` goes 3.6-3.8 s -> 1.06-1.07 s.
-Enabling TBB was right; it made a pre-existing 50% slowdown reachable by
-default for a whole class of input.  Worth investigating, or at minimum a
-note in the release announcement.
+Measured 2026-08-31.  The three `F4MatrixReducer::addRowMultiple` claims now
+have numbers and the comments have been rewritten to match.  The TBB question
+is confirmed as a real effect but cannot be sized on the hardware available
+here; it needs the 12-core machine.
 
-Moved here from 9, because it is the same kind of question and wants the same
-harness: three performance claims in `F4MatrixReducer::addRowMultiple`, the
-innermost loop of matrix reduction, all measured on **MSVC 2012** in 2013 and
-never since.
+### The harness
 
-- `:131` -- using the local `entries` rather than the member `mEntries` was
-  worth 2.8 s -> 2.4 s, and undoing it is said to cost 14% of the whole
-  computation.  The author adds "That does not make sense to me, but it is a
-  fact none-the-less."
-- `:147` -- unrolling the loop by hand was worth 2.601 s -> 2.480 s, about
-  5%; unrolling further gained nothing.
-- `:156` -- a Duff's-device jump into the loop body was tried and was slower.
+`bench.py` at the top of the tree.  It runs every (binary, input) cell once per
+round in round-robin order, so that machine drift is spread across all cells
+instead of landing on whichever variant was measured last, and reports min,
+median, mean and standard deviation of user CPU and wall time.
 
-They are unverifiable as they stand, and they guard code that looks
-gratuitously ugly without them, so a reader who deletes the comments will
-eventually delete the unrolling too.  Deleting them loses a real caution;
-keeping them implies a measurement that means nothing on any compiler in use.
+Interleaving turned out to be the whole game.  This machine is an i5-6300U --
+two physical cores plus hyperthreading, `powersave` governor -- and sequential
+measurements of the same binary minutes apart differ by up to 40%: one
+`yang1 -breakAfter 4750` run timed at 46 s against 32.5 s for the same binary
+inside the harness.  **Only comparisons within a single interleaved run are
+valid.**  Two mistakes were made and caught by re-running: reading a faster
+base time in a later run as a 9% win for `-falign-loops`, when nothing had
+been interleaved to support it.
 
-Measuring is the only way out, and it is a real exercise rather than a
-five-minute check: three variants, effects of 5-14%, on input where the
-review already documents 50% run-to-run swings under TBB.  It wants the
-serial build, many repetitions, and an honest note that the answer covers one
-machine and one compiler.  Doing it alongside the TBB question is the point
-of moving it here -- both need the same benchmark harness, and the TBB
-result is worth little without knowing whether this loop is still shaped the
-way its comments assume.
+The variants were built from a `git archive` of HEAD with a
+`MATHICGB_BENCH_VARIANT` bitmask over `addRowMultiple` (bit 0: member
+`mEntries` instead of the local `restrict` pointer; bit 1: plain loop instead
+of the 2x unrolling; bit 2: Duff's-device goto).  All variants produced
+byte-identical `.gb` output and distinct object files, so the compiler was not
+collapsing them.
+
+Note for anyone repeating this: `mgb gb` defaults to `-reducer 21`, the
+*classic* reducer, so every F4 measurement needs an explicit `-reducer 26`, and
+the project name has to come before the flags.  Plain `mgb gb
+hyclic8-101-trimmed` takes 78 s here and says nothing about F4 or TBB.
+
+### The three `addRowMultiple` claims
+
+GCC 11.4 `-O2`, serial, as a change in whole-computation user CPU against the
+shipped code.  The two columns are plain `-O2` and `-O2` plus
+`-falign-loops=32 -falign-functions=64 -falign-jumps=32`, which perturbs code
+layout and nothing else.
+
+| variant | hyclic8 -O2 | hyclic8 +align | yang1 -O2 | yang1 +align |
+|---|---|---|---|---|
+| `mEntries` instead of local | +0.3% | +1.4% | +0.0% | -0.9% |
+| plain loop, no unrolling | +8.2% | +9.9% | -0.6% | -2.5% |
+| Duff's-device goto | +7.6% | +22.5% | -10.8% | -3.3% |
+
+- **The 14% claim at `:131` is dead.**  Eight measurements across three inputs
+  and two flag sets, every one inside +-1.4%, which is under the run-to-run
+  noise on the hyclic8 cells.  It was an MSVC 2012 register-allocation quirk,
+  and its own author wrote "that does not make sense to me."  The local is kept
+  as an aliasing hint -- that is what `MATHICGB_RESTRICT` is for -- but the
+  comment no longer claims it buys anything, and says plainly that replacing it
+  is fine.
+- **The unrolling claim at `:147` holds, but not as a flat 5%.**  It is worth
+  8-12% on hyclic8 and slightly *negative* on yang1.  The comment now gives the
+  per-input table, so the caution survives without implying a number that only
+  applies to one shape of matrix.
+- **The Duff's-device claim at `:156` reaches the right conclusion for the
+  wrong reason.**  That variant is 8-23% slower on hyclic8 but 2-11% *faster*
+  on yang1.  Both figures move by a factor of four under the alignment flags
+  alone, so most of what it measures is where the compiler puts the loop rather
+  than the branch structure.  Still not worth a hyclic8 regression to chase.
+
+`hilbertkunz1` was measured too and every variant landed within +-1.1% of base
+on it; it is too small to discriminate and is not worth carrying.
+
+### The TBB default
+
+Full runs, `-reducer 26`:
+
+| input | serial wall | TBB wall | TBB user |
+|---|---|---|---|
+| `hyclic8-101-trimmed` | 3.12 s | 1.74 s | 4.70 s |
+| `yang1` | 11 m 38 s | 11 m 42 s | 12 m 47 s |
+
+The complaint reproduces qualitatively.  On `yang1`, F4 with TBB buys no wall
+time at all and burns 10% more CPU, sitting at ~111% CPU for the whole run.  On
+two physical cores that reads as "no benefit"; the 12-core measurement of the
+same shape read as a 50% regression, which is what to expect if the overhead
+scales with thread count while the parallel fraction stays near zero.  The
+1.8x on hyclic8 is close to the ceiling for two cores, so this machine can
+show *that* yang1 fails to scale but cannot size the regression.  **Sizing it
+needs the 12-core machine, and the release announcement should carry the note
+regardless.**
+
+The structural reason is at `F4MatrixReducer.cpp:439-511`: `reduceToEchelonForm`
+puts its `parallel_for` *inside* a `while` loop, with a full join and a global
+`mtbb::mutex` on every iteration.  When the bottom-right block needs many
+iterations over shrinking row counts there is almost nothing to parallelize and
+the per-iteration join dominates.
+
+### Unresolved: the recorded yang1 baseline
+
+PR #65 records 14.2-14.4 s serial for `yang1`; the same run here takes
+11 m 38 s.  That is 49x, and it is not machine speed -- the classic reducer
+calibrates this box at 2.2-2.3x slower than the 12-core machine (yang1 5.07 s
+against 2.24 s; hyclic8 78 s against 44.6 s), and hyclic8 F4 lines up fine.
+
+Bisecting with `-breakAfter` localizes it.  yang1 F4 reaches 4750 of its 4761
+basis elements in 32.5 s and then spends roughly 650 s on the tail, where the
+basis stops growing and the remaining S-pairs all reduce to zero through one
+enormous matrix.  Peak RSS is 155 MB at the 4750 mark, so it is not memory
+pressure.  32.5 s is close to the recorded 21.4 s times this machine's ratio.
+
+The likeliest reading is that the recorded numbers came from a run that never
+entered that final stage, but that is a guess, and the exact invocation from
+PR #65 would settle it.  Until then `-breakAfter 4750` is the affordable proxy
+and is what the table above uses for yang1.
+
+That tail is worth a look on its own account: a stage that is 95% of the
+runtime of the project's headline slow example, producing no new basis
+elements, is either a missing S-pair criterion or a matrix that should have
+been split.
+
+### Found along the way
+
+`ClassicGBAlg::setSPairGroupSize` at `ClassicGBAlg.cpp:150` assigns
+`mReducer.preferredSetSize()` to its own by-value parameter and drops it:
+
+    void ClassicGBAlg::setSPairGroupSize(unsigned int groupSize) {
+      if (groupSize == 0)
+        groupSize = mReducer.preferredSetSize();   // dead store
+      else
+        mSPairGroupSize = groupSize;
+    }
+
+Behaviour is correct only because the constructor at `:127` already initializes
+the member to the same value.  `MESClassicGBAlg.cpp:137` is identical.  Both
+want the assignment to go to `mSPairGroupSize`, or the branch collapsing to a
+comment saying the constructor already handled it.
 
 ## [OPEN] 11. Remove build/setup/make-Makefile.sh
 
