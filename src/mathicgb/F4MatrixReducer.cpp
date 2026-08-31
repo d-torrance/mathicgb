@@ -128,12 +128,13 @@ namespace {
       const Iter begin,
       const Iter end
     ) {
-      // I have a matrix reduction that goes from 2.8s to 2.4s on MSVC 2012 by
-      // using entries instead of mEntries, even after removing restrict and
-      // const from entries. That does not make sense to me, but it is a fact
-      // none-the-less, so don't replace entries by mEntries unless you think
-      // it's worth a 14% slowdown of matrix reduction (the whole computation,
-      // not just this method).
+      // A restrict-qualified local, rather than indexing mEntries directly, so
+      // that the compiler may assume the row being added does not alias this
+      // dense row. On GCC 11.4 -O2 it makes no measurable difference: dropping
+      // it for mEntries lands between -0.9% and +1.4% of whole-computation
+      // time on hyclic8-101-trimmed, yang1 and hilbertkunz1, which is inside
+      // the run-to-run noise on all three. Not measured on clang or MSVC.
+      // Nothing here depends on it, so drop it if it reads better.
       ScalarProductSum* const MATHICGB_RESTRICT entries = mEntries.data();
 
 #ifdef MATHICGB_DEBUG
@@ -144,16 +145,30 @@ namespace {
         MATHICGB_ASSERT(entries + it.index() == &mEntries[it.index()]);
       }
 #endif
-      // I have a matrix reduction that goes from 2.601s to 2.480s on MSVC 2012
-      // by unrolling this loop manually. Unrolling more than once was not a
-      // benefit. So don't undo the unrolling unless you think it's worth a 5%
-      // slowdown of matrix reduction (the whole computation, not just this
-      // method).
+      // The loop below is unrolled by two by hand, with one iteration peeled
+      // off first when the row length is odd. Keep it that way. Replacing it
+      // with a plain one-at-a-time loop costs, in whole-computation time on
+      // GCC 11.4 -O2, serial:
+      //
+      //   hyclic8-101-trimmed        +8% to +12%
+      //   yang1 (-breakAfter 4750)   -1% to -3%, i.e. marginally faster
+      //   hilbertkunz1               +1%, inside the noise
+      //
+      // So the unrolling pays for itself on the wide dense matrices hyclic8
+      // produces, and is a wash on inputs that do not generate them. Unrolling
+      // by four was measured on MSVC 2012 and gained nothing; it has not been
+      // tried since.
 
       auto it = begin;
       if (std::distance(begin, end) % 2 == 1) {
-        // Replacing this by a goto into the middle of the following loop
-        // (similar to Duff's device) made the code slower on MSVC 2012.
+        // This peeled iteration could instead be a goto into the middle of the
+        // loop below, in the manner of Duff's device. That was measured and is
+        // not worth it: 8% to 23% slower on hyclic8-101-trimmed, against 2% to
+        // 11% faster on yang1. Both figures also move by a factor of four in
+        // response to -falign-loops and -falign-jumps, which change only where
+        // the compiler places the loop, so most of the difference is code
+        // layout rather than the branch structure. A hyclic8 regression that
+        // large is not worth chasing a yang1 gain that unstable.
         multiplyAdd(it.scalar(), multiple, entries[it.index()]);
         ++it;
       }
