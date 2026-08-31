@@ -447,9 +447,10 @@ layout and nothing else.
 
 On clang 21 / arm64 the first of the three needs no timing at all: variants 0
 and 1 compile to **byte-identical object files**, so the compiler emits the
-same code with and without the restrict local.  Where the object files match there is
-nothing to measure, and that is a firmer answer than any timing run.  GCC emits
-*different* code for the same two, of identical size, timing within +-1.4%.  So
+same code with and without the restrict local.  Where the object files match
+there is nothing to measure, and that is a firmer answer than any timing run.
+GCC emits *different* code for the same two, of identical size, timing within
++-1.4%.  So
 one compiler acts on the aliasing hint and gains nothing by it, and the other
 ignores it outright.
 
