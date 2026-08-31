@@ -1,0 +1,79 @@
+diff --git a/src/mathicgb/F4MatrixReducer.cpp b/src/mathicgb/F4MatrixReducer.cpp
+index 5d6b3da..743955b 100644
+--- a/src/mathicgb/F4MatrixReducer.cpp
++++ b/src/mathicgb/F4MatrixReducer.cpp
+@@ -135,14 +135,27 @@ namespace {
+       // time on hyclic8-101-trimmed, yang1 and hilbertkunz1, which is inside
+       // the run-to-run noise on all three. Not measured on clang or MSVC.
+       // Nothing here depends on it, so drop it if it reads better.
++// Benchmark instrumentation. MATHICGB_BENCH_VARIANT selects which of the hand
++// optimizations in this method are in effect, so that each can be measured
++// against the shipped code. 0 is the shipped code.
++//   bit 0 (1): index mEntries directly instead of via a restrict local
++//   bit 1 (2): plain loop instead of the manual unrolling by two
++//   bit 2 (4): Duff's-device goto instead of the odd-length peel
++#ifndef MATHICGB_BENCH_VARIANT
++#define MATHICGB_BENCH_VARIANT 0
++#endif
++#if (MATHICGB_BENCH_VARIANT & 1) == 0
+       ScalarProductSum* const MATHICGB_RESTRICT entries = mEntries.data();
++#define MATHICGB_BENCH_ENTRIES entries
++#else
++#define MATHICGB_BENCH_ENTRIES mEntries
++#endif
+ 
+ #ifdef MATHICGB_DEBUG
+       // These asserts are separated out since otherwise they would also need
+       // to be duplicated due to the manual unrolling.
+       for (auto it = begin; it != end; ++it) {
+         MATHICGB_ASSERT(it.index() < colCount());
+-        MATHICGB_ASSERT(entries + it.index() == &mEntries[it.index()]);
+       }
+ #endif
+       // The loop below is unrolled by two by hand, with one iteration peeled
+@@ -160,24 +173,34 @@ namespace {
+       // tried since.
+ 
+       auto it = begin;
++#if (MATHICGB_BENCH_VARIANT & 2) != 0
++      for (; it != end; ++it)
++        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
++#elif (MATHICGB_BENCH_VARIANT & 4) != 0
++      if (it == end)
++        return;
++      if (std::distance(begin, end) % 2 == 1)
++        goto odd;
++      while (it != end) {
++        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
++        ++it;
++      odd:
++        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
++        ++it;
++      }
++#else
+       if (std::distance(begin, end) % 2 == 1) {
+-        // This peeled iteration could instead be a goto into the middle of the
+-        // loop below, in the manner of Duff's device. That was measured and is
+-        // not worth it: 8% to 23% slower on hyclic8-101-trimmed, against 2% to
+-        // 11% faster on yang1. Both figures also move by a factor of four in
+-        // response to -falign-loops and -falign-jumps, which change only where
+-        // the compiler places the loop, so most of the difference is code
+-        // layout rather than the branch structure. A hyclic8 regression that
+-        // large is not worth chasing a yang1 gain that unstable.
+-        multiplyAdd(it.scalar(), multiple, entries[it.index()]);
++        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
+         ++it;
+       }
+       while (it != end) {
+-        multiplyAdd(it.scalar(), multiple, entries[it.index()]);
++        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
+         ++it;
+-        multiplyAdd(it.scalar(), multiple, entries[it.index()]);
++        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
+         ++it;
+       }
++#endif
++#undef MATHICGB_BENCH_ENTRIES
+     }
+ 
+     void rowReduceByUnitary(

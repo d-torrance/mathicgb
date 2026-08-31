@@ -60,3 +60,6 @@ relass/
 /unittest
 /unittest.log
 /unittest.trs
+
+# Benchmark build trees (see BENCH-RUNBOOK.md)
+/bench/
