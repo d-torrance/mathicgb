@@ -134,7 +134,7 @@ namespace {
       // of it. GCC 11.4 -O2 on x86-64 emits different code with and without
       // it, timing within -0.9% to +1.4% of whole-computation time on
       // hyclic8-101-trimmed, yang1 and hilbertkunz1 -- inside the run-to-run
-      // noise on all three. clang on arm64 emits byte-identical object files
+      // noise on all three. clang 21 on arm64 emits byte-identical object files
       // either way, so there is not even anything to time. Not measured on
       // MSVC. Nothing here depends on it, so drop it if it reads better.
       ScalarProductSum* const MATHICGB_RESTRICT entries = mEntries.data();

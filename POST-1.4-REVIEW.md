@@ -442,7 +442,7 @@ shipped code.  The two columns are plain `-O2` and `-O2` plus
 `-falign-loops=32 -falign-functions=64 -falign-jumps=32`, which perturbs code
 layout and nothing else.
 
-On clang/arm64 the first of the three needs no timing at all: variants 0 and 1
+On clang 21 / arm64 the first of the three needs no timing at all: variants 0 and 1
 compile to **byte-identical object files**, so the compiler emits the same code
 with and without the restrict local.  Where the object files match there is
 nothing to measure, and that is a firmer answer than any timing run.  GCC emits
@@ -480,7 +480,7 @@ on it; it is too small to discriminate and is not worth carrying.
 
 Measured on two machines three hardware generations apart, which turns out to
 matter: an i5-6300U (2 physical cores + HT, GCC 11.4, x86-64) and an Apple M5
-Pro (6 performance cores + 12 efficiency cores, clang, arm64).  Full runs,
+Pro (6 performance cores + 12 efficiency cores, clang 21, arm64).  Full runs,
 `-reducer 26`.
 
 The complaint in PR #65 is real, but it is not the complaint that was filed.
