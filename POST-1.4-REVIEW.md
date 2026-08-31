@@ -27,7 +27,7 @@ streaming-interface paths.  What follows is what it did not reach.
 | 7 | `mgb matrix`'s unvalidated modulus | **DONE** — PR #74 |
 | 8 | three wrong or inconsistent strings in `src/cli`'s help text | **DONE** — PR #75 |
 | 9 | comments that mislead: `isPrime`'s precondition, obsolete compilers, stale URLs | **DONE** — PR #76 |
-| 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | **MEASURED** — F4 loop comments rewritten; TBB question narrowed |
+| 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | **MEASURED** — F4 loop comments rewritten; TBB cost sized, fix belongs in its own patch |
 | 11 | remove `build/setup/make-Makefile.sh` | open |
 | 12 | remove `build/vs12` | open |
 | 13 | autotools `--enable-debug` | open |
@@ -393,10 +393,19 @@ pass in each.
 
 ## [MEASURED] 10. Performance claims nobody has checked this decade
 
-Measured 2026-08-31.  The three `F4MatrixReducer::addRowMultiple` claims now
-have numbers and the comments have been rewritten to match.  The TBB question
-is confirmed as a real effect but cannot be sized on the hardware available
-here; it needs the 12-core machine.
+Measured 2026-08-31 on two machines: an i5-6300U (2 physical cores + HT,
+`powersave`, GCC 11.4, x86-64) and an Apple M5 Pro (6 performance cores + 12
+efficiency cores, clang, arm64).  The three
+`F4MatrixReducer::addRowMultiple` claims now have numbers and the comments have
+been rewritten to match.  The TBB question is sized, and turned out to be a
+different problem from the one filed: not a wall-clock regression on one
+pathological input, but a parallel ceiling of 1.2x to 1.8x that applies to
+everything measured, against a default that uses every core.  Capping the
+default belongs in its own patch.
+
+Both remaining loose ends are closed: the recorded `yang1` baseline is shown
+below not to have been a full run, and `hilbertkunz1` is confirmed too small to
+discriminate between variants.
 
 ### The harness
 
@@ -433,6 +442,14 @@ shipped code.  The two columns are plain `-O2` and `-O2` plus
 `-falign-loops=32 -falign-functions=64 -falign-jumps=32`, which perturbs code
 layout and nothing else.
 
+On clang/arm64 the first of the three needs no timing at all: variants 0 and 1
+compile to **byte-identical object files**, so the compiler emits the same code
+with and without the restrict local.  Where the object files match there is
+nothing to measure, and that is a firmer answer than any timing run.  GCC emits
+*different* code for the same two, of identical size, timing within +-1.4%.  So
+one compiler acts on the aliasing hint and gains nothing by it, and the other
+ignores it outright.
+
 | variant | hyclic8 -O2 | hyclic8 +align | yang1 -O2 | yang1 +align |
 |---|---|---|---|---|
 | `mEntries` instead of local | +0.3% | +1.4% | +0.0% | -0.9% |
@@ -461,51 +478,118 @@ on it; it is too small to discriminate and is not worth carrying.
 
 ### The TBB default
 
-Full runs, `-reducer 26`:
+Measured on two machines three hardware generations apart, which turns out to
+matter: an i5-6300U (2 physical cores + HT, GCC 11.4, x86-64) and an Apple M5
+Pro (6 performance cores + 12 efficiency cores, clang, arm64).  Full runs,
+`-reducer 26`.
 
-| input | serial wall | TBB wall | TBB user |
-|---|---|---|---|
-| `hyclic8-101-trimmed` | 3.12 s | 1.74 s | 4.70 s |
-| `yang1` | 11 m 38 s | 11 m 42 s | 12 m 47 s |
+The complaint in PR #65 is real, but it is not the complaint that was filed.
+Enabling TBB does not make anything slower in wall-clock terms on current
+hardware.  It burns two to six times the CPU to shave a little off the wall.
 
-The complaint reproduces qualitatively.  On `yang1`, F4 with TBB buys no wall
-time at all and burns 10% more CPU, sitting at ~111% CPU for the whole run.  On
-two physical cores that reads as "no benefit"; the 12-core measurement of the
-same shape read as a 50% regression, which is what to expect if the overhead
-scales with thread count while the parallel fraction stays near zero.  The
-1.8x on hyclic8 is close to the ceiling for two cores, so this machine can
-show *that* yang1 fails to scale but cannot size the regression.  **Sizing it
-needs the 12-core machine, and the release announcement should carry the note
-regardless.**
+M5 Pro, `yang1`, sweeping `-threadCount`:
 
-The structural reason is at `F4MatrixReducer.cpp:439-511`: `reduceToEchelonForm`
-puts its `parallel_for` *inside* a `while` loop, with a full join and a global
-`mtbb::mutex` on every iteration.  When the bottom-right block needs many
-iterations over shrinking row counts there is almost nothing to parallelize and
-the per-iteration join dominates.
+| threads | wall | speedup | user+sys | sys |
+|---|---|---|---|---|
+| 1 | 43.76 s | 1.00x | 42.98 s | 0.42 s |
+| 2 | 37.16 s | **1.18x** | 45.65 s | 1.86 s |
+| 4 | 39.64 s | 1.10x | 53.42 s | 6.91 s |
+| 8 | 38.42 s | 1.14x | 61.79 s | 16.05 s |
+| 12 | 38.00 s | 1.15x | 69.81 s | 24.04 s |
+| 16 | 38.65 s | 1.13x | 81.70 s | 35.12 s |
 
-### Unresolved: the recorded yang1 baseline
+M5 Pro, `hyclic8-101-trimmed`, the input that was supposed to be the control
+that scales:
 
-PR #65 records 14.2-14.4 s serial for `yang1`; the same run here takes
-11 m 38 s.  That is 49x, and it is not machine speed -- the classic reducer
-calibrates this box at 2.2-2.3x slower than the 12-core machine (yang1 5.07 s
-against 2.24 s; hyclic8 78 s against 44.6 s), and hyclic8 F4 lines up fine.
+| threads | wall | speedup | user+sys | sys |
+|---|---|---|---|---|
+| 1 | 0.77 s | 1.00x | 0.76 s | 0.01 s |
+| 2 | 0.50 s | 1.54x | 0.84 s | 0.05 s |
+| 4 | 0.44 s | **1.75x** | 1.21 s | 0.29 s |
+| 8 | 0.47 s | 1.64x | 2.28 s | 1.14 s |
+| 12 | 0.48 s | 1.60x | 3.42 s | 2.06 s |
+| 16 | 0.48 s | 1.60x | 4.43 s | 2.89 s |
 
-Bisecting with `-breakAfter` localizes it.  yang1 F4 reaches 4750 of its 4761
-basis elements in 32.5 s and then spends roughly 650 s on the tail, where the
-basis stops growing and the remaining S-pairs all reduce to zero through one
-enormous matrix.  Peak RSS is 155 MB at the 4750 mark, so it is not memory
-pressure.  32.5 s is close to the recorded 21.4 s times this machine's ratio.
+**Both inputs saturate and then degrade.**  `hyclic8` peaks at 1.75x on four
+threads and gets worse above that; `yang1` peaks at 1.18x on two.  Neither
+comes near six performance cores, let alone eighteen threads.  Past the peak
+every added thread costs `sys` time roughly linearly and buys nothing.
 
-The likeliest reading is that the recorded numbers came from a run that never
-entered that final stage, but that is a guess, and the exact invocation from
-PR #65 would settle it.  Until then `-breakAfter 4750` is the affordable proxy
-and is what the table above uses for yang1.
+The framing this review started with -- that `yang1` is a pathological input
+that fails to parallelize -- is wrong.  `yang1` is the worse case of a ceiling
+that applies to everything measured.  The corroborating number: the i5-6300U
+reaches 1.79x on `hyclic8`, which is the *same ceiling* the M5 Pro hits at four
+threads.  Two machines, two compilers, two architectures, same wall.  That is
+the algorithm, not the hardware and not the TBB version.
 
-That tail is worth a look on its own account: a stage that is 95% of the
-runtime of the project's headline slow example, producing no new basis
-elements, is either a missing S-pair criterion or a matrix that should have
-been split.
+What ships is `-threadCount 0`, which means use every core, so every user lands
+on the far right of both tables:
+
+| | wall | user | sys | total CPU |
+|---|---|---|---|---|
+| `yang1`, `--with-tbb=no` | 42.30 s | 42.00 s | 0.24 s | 42.24 s |
+| `yang1`, TBB, default | 38.23 s | 46.62 s | 39.09 s | **85.71 s** |
+| `hyclic8`, 1 thread | 0.77 s | 0.75 s | 0.01 s | 0.76 s |
+| `hyclic8`, TBB, default | 0.47 s | 1.64 s | 3.29 s | **4.93 s** |
+
+1.11x wall for 2.03x the CPU on `yang1`; 1.64x wall for 6.5x the CPU on
+`hyclic8`.  `sys` goes from 0.24 s to 39.09 s, a factor of 163.  Essentially
+all of the added cost is synchronization, which is what the structure predicts:
+`reduceToEchelonForm` at `F4MatrixReducer.cpp:439-511` puts its `parallel_for`
+inside a `while` loop, with a full join and a global `mtbb::mutex` on every
+iteration, and `F4MatrixBuilder.cpp:153` has the same shape.
+
+On a laptop that is battery and fan noise.  On a shared machine or a CI runner
+it is two to six times the load for a marginal gain.  Worth the release note,
+and worth a follow-up: **the fix is to cap the default thread count, not to
+turn TBB off.**  Four threads would keep essentially all of the available
+speedup on both inputs at a fraction of the waste.  Choosing the cap properly
+means measuring more than two inputs, so it belongs in its own patch.
+
+One measurement trap, which is likely how a 50% regression came to be recorded
+in the first place.  What mgb prints as "total compute time" is **user + sys,
+not wall**.  Every row above matches to three digits -- at 16 threads,
+46.58 + 35.12 = 81.70 against a reported 81.699.  So the tool reports a
+multithreaded run as getting monotonically slower while its wall time is flat.
+Anyone timing mgb by reading its own output, rather than by wrapping it in
+`time`, will see a large regression that does not exist.  That is worth fixing
+on its own; at minimum the label is wrong.
+
+### Resolved: the recorded yang1 baseline is not a full run
+
+PR #65 records 14.2-14.4 s serial for `yang1`.  Calibrating three machines on
+the classic reducer, which is ordinary single-threaded work, against the full
+serial F4 run:
+
+| | classic `yang1` | F4 `yang1`, full serial |
+|---|---|---|
+| i5-6300U | 5.07 s | 698 s |
+| M5 Pro | 1.01 s (5.0x faster) | 42.3 s (16.5x faster) |
+| 12-core, as recorded | 2.24 s (2.26x faster) | **14.2 s** |
+
+Two things follow.
+
+The F4 tail is memory-bandwidth-bound.  The i5-6300U is 5.0x slower than the
+M5 Pro on ordinary work but 16.5x slower on the full F4 run -- a 3.3x excess
+that tracks bandwidth rather than clock, and explains why that machine spends
+650 s of its 698 s on the last eleven basis elements while the M5 Pro does the
+whole computation in 42 s.  The tail itself is real everywhere; only its cost
+is hardware-sensitive.
+
+And the recorded 14.2 s cannot be a complete computation.  The 12-core machine
+is 2.2x *slower* than the M5 Pro at ordinary single-threaded work, so a full
+serial `yang1` F4 there should take on the order of 93 s, and not less than
+42 s even granting it the M5 Pro's per-core bandwidth.  14.2 s is 6.5x faster
+than the most generous estimate.  Whatever was measured, it was not this
+computation -- most likely a run that stopped before the final stage.
+
+So PR #65's yang1 figures should not be used as a baseline, and the 50% wall
+regression attributed to TBB is not reproducible on either machine here.  What
+is reproducible, and what the release note should say, is the CPU cost above.
+
+For the record, the full computation is 4,761 basis elements, 54,324 terms and
+11,331,180 S-pairs considered, identical on both machines and at every thread
+count -- so none of the above is comparing different amounts of work.
 
 ### Found along the way
 

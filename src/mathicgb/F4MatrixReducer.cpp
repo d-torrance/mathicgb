@@ -130,11 +130,13 @@ namespace {
     ) {
       // A restrict-qualified local, rather than indexing mEntries directly, so
       // that the compiler may assume the row being added does not alias this
-      // dense row. On GCC 11.4 -O2 it makes no measurable difference: dropping
-      // it for mEntries lands between -0.9% and +1.4% of whole-computation
-      // time on hyclic8-101-trimmed, yang1 and hilbertkunz1, which is inside
-      // the run-to-run noise on all three. Not measured on clang or MSVC.
-      // Nothing here depends on it, so drop it if it reads better.
+      // dense row. Neither compiler it has been measured on gets anything out
+      // of it. GCC 11.4 -O2 on x86-64 emits different code with and without
+      // it, timing within -0.9% to +1.4% of whole-computation time on
+      // hyclic8-101-trimmed, yang1 and hilbertkunz1 -- inside the run-to-run
+      // noise on all three. clang on arm64 emits byte-identical object files
+      // either way, so there is not even anything to time. Not measured on
+      // MSVC. Nothing here depends on it, so drop it if it reads better.
       ScalarProductSum* const MATHICGB_RESTRICT entries = mEntries.data();
 
 #ifdef MATHICGB_DEBUG
