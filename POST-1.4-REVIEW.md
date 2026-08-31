@@ -37,6 +37,9 @@ streaming-interface paths.  What follows is what it did not reach.
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | open |
 | 18 | a fourth `MATHICGB_ASSERT_NO_ASSUME` on user input, in `StaticMonoMap.hpp` | open |
 | 19 | two `gb` options accept out-of-range values silently | open |
+| 20 | `total compute time` reports CPU time as if it were elapsed | open |
+| 21 | the default thread count uses every core, but nothing scales past four | open |
+| 22 | dead store in `setSPairGroupSize`, in two files | open |
 
 ---
 
@@ -442,9 +445,9 @@ shipped code.  The two columns are plain `-O2` and `-O2` plus
 `-falign-loops=32 -falign-functions=64 -falign-jumps=32`, which perturbs code
 layout and nothing else.
 
-On clang 21 / arm64 the first of the three needs no timing at all: variants 0 and 1
-compile to **byte-identical object files**, so the compiler emits the same code
-with and without the restrict local.  Where the object files match there is
+On clang 21 / arm64 the first of the three needs no timing at all: variants 0
+and 1 compile to **byte-identical object files**, so the compiler emits the
+same code with and without the restrict local.  Where the object files match there is
 nothing to measure, and that is a firmer answer than any timing run.  GCC emits
 *different* code for the same two, of identical size, timing within +-1.4%.  So
 one compiler acts on the aliasing hint and gains nothing by it, and the other
@@ -593,20 +596,9 @@ count -- so none of the above is comparing different amounts of work.
 
 ### Found along the way
 
-`ClassicGBAlg::setSPairGroupSize` at `ClassicGBAlg.cpp:150` assigns
-`mReducer.preferredSetSize()` to its own by-value parameter and drops it:
-
-    void ClassicGBAlg::setSPairGroupSize(unsigned int groupSize) {
-      if (groupSize == 0)
-        groupSize = mReducer.preferredSetSize();   // dead store
-      else
-        mSPairGroupSize = groupSize;
-    }
-
-Behaviour is correct only because the constructor at `:127` already initializes
-the member to the same value.  `MESClassicGBAlg.cpp:137` is identical.  Both
-want the assignment to go to `mSPairGroupSize`, or the branch collapsing to a
-comment saying the constructor already handled it.
+Three defects surfaced while measuring, none of them what this item set out to
+look at, and all three are worth more than the comment rewrite that item 10
+actually asked for.  They are written up as items 20, 21 and 22.
 
 ## [OPEN] 11. Remove build/setup/make-Makefile.sh
 
@@ -842,6 +834,106 @@ selecting a data structure, three different answers to the same bad input.
 The fix worth having is validating each of these where it is parsed, so a
 typo is refused rather than ignored.  Deciding whether `gb` should advertise
 an option it does not use is a separate question, and the smaller one.
+
+## [OPEN] 20. `total compute time` reports CPU time as if it were elapsed
+
+Found 2026-08-31 while measuring item 10, and probably the reason item 10 was
+filed in the first place.
+
+`ClassicGBAlg::printStats` at `ClassicGBAlg.cpp:444` prints
+
+    out << " total compute time: " << mTimer.getMilliseconds()/1000.0 ...
+
+and `mathic::Timer` is a wrapper around `std::clock()`.  mathic's own header
+says so plainly -- *"Measures spans of CPU time"* -- so the number is process
+CPU time, the sum over all threads, not elapsed time.  The label says
+otherwise, and so does "Time spent" a few lines down at `:460`.
+`MESClassicGBAlg.cpp:426` has the same line.
+
+Single-threaded this is invisible, because the two agree.  Multithreaded it
+inverts the result.  From the `yang1` sweep in item 10, on an 18-thread
+machine:
+
+| threads | wall | mgb reports | user + sys |
+|---|---|---|---|
+| 1 | 43.76 s | 42.976 s | 42.98 s |
+| 4 | 39.64 s | 53.410 s | 53.42 s |
+| 16 | 38.65 s | 81.699 s | 81.70 s |
+
+Every row matches `user + sys` to three digits.  So mgb reports itself getting
+almost twice as slow across a sweep in which it actually got slightly faster.
+Anyone timing mgb by reading its own output -- which is the obvious thing to
+do, since it prints a time without being asked -- measures a large regression
+that does not exist.  That is very likely how PR #65's 50% TBB regression came
+to be recorded; no such regression reproduces under `time` on either machine.
+
+The fix is small and the only real question is which way to take it: relabel
+to "total CPU time", or print both, which is the more useful answer since the
+gap between them *is* the parallel overhead.  Printing both would have made
+item 21 obvious years ago.
+
+`mathic::Timer` is used the same way in `SignatureGB.cpp:294`, which wants
+checking in the same pass.
+
+## [OPEN] 21. The default thread count uses every core, but nothing scales past four
+
+Found 2026-08-31 while measuring item 10, which has the full tables.
+
+`-threadCount 0`, the default, means use every core.  Measured on an 18-thread
+machine, F4's parallel speedup peaks at **1.75x on four threads** for
+`hyclic8-101-trimmed` and **1.18x on two** for `yang1`, and *degrades* above
+that.  An i5-6300U reaches 1.79x on `hyclic8` with two physical cores -- the
+same ceiling the 18-thread machine hits.  Two machines, two compilers, two
+architectures, same wall.  The ceiling is algorithmic.
+
+Past the peak each added thread costs `sys` time roughly linearly and buys
+nothing, so the shipped default puts every user at the far right of that
+curve: 2.03x the CPU for 1.11x the wall on `yang1`, and 6.5x the CPU for 1.64x
+the wall on `hyclic8`.  On a laptop that is battery and fan; on a CI runner or
+a shared machine it is several times the load for a marginal gain.
+
+The structural cause is visible: `reduceToEchelonForm`
+(`F4MatrixReducer.cpp:439-511`) puts its `parallel_for` inside a `while` loop,
+with a full join and a global `mtbb::mutex` on every iteration, and
+`F4MatrixBuilder.cpp:153` has the same shape.  The parallel regions are too
+short to amortize the join.
+
+Two candidate fixes, and they are not exclusive:
+
+- Cap the default at four threads.  Cheap, keeps essentially all of the
+  available speedup, and needs only a defensible number.  Picking it honestly
+  wants more than the two inputs measured so far.
+- Restructure `reduceToEchelonForm` so the parallel region spans the `while`
+  loop rather than sitting inside it.  This is the real fix and much the larger
+  job.
+
+The cap is worth doing first, and on its own.  Note that this is *not* an
+argument for reverting PR #65: TBB still wins on wall time everywhere measured.
+
+## [OPEN] 22. Dead store in `setSPairGroupSize`, in two files
+
+Found 2026-08-31 while chasing item 10's `yang1` baseline.
+
+`ClassicGBAlg::setSPairGroupSize` at `ClassicGBAlg.cpp:150` assigns
+`mReducer.preferredSetSize()` to its own by-value parameter and drops it:
+
+    void ClassicGBAlg::setSPairGroupSize(unsigned int groupSize) {
+      if (groupSize == 0)
+        groupSize = mReducer.preferredSetSize();   // dead store
+      else
+        mSPairGroupSize = groupSize;
+    }
+
+Behaviour is correct only because the constructor at `:127` already initializes
+the member to the same value, so the branch that looks like it computes the
+default is the branch that does nothing.  `MESClassicGBAlg.cpp:137` is
+identical.
+
+Either the assignment should go to `mSPairGroupSize`, or the branch should
+collapse to a comment saying the constructor already handled it.  The second is
+more honest about what the code does.  Low priority -- there is no user-visible
+symptom -- but it is a trap for anyone changing how the default is chosen,
+which item 21 might well involve.
 
 ## Considered and declined
 
