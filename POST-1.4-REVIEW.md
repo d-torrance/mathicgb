@@ -12,6 +12,23 @@ conversion is complete (no `static const` class member with an in-class
 initializer remains), and the modulus work closes the polynomial-input and
 streaming-interface paths.  What follows is what it did not reach.
 
+## What belongs on this branch
+
+**No source changes.**  `release-todo` carries this document and the tooling
+that supports it -- `bench.py`, `BENCH-RUNBOOK.md`, `bench-variants.patch` --
+and nothing under `src/`.  Every fix goes on its own branch off `master` and
+into its own PR, the way items 1 through 9 did.
+
+This is written down because it was got wrong once.  Item 10's measurements
+came with a rewrite of three comments in `F4MatrixReducer.cpp`, committed here
+rather than on a branch of its own.  The eventual PR (#77) took a smaller and
+different approach, so the branch was left carrying a competing version of a
+file it had no business touching, which would have conflicted on the next merge
+from `master` for no good reason.  That commit has been reverted.
+
+A change that seems too small for its own branch is exactly the one to watch:
+the comment rewrite looked like part of writing up item 10, and it was not.
+
 ---
 
 ## Status at a glance
