@@ -39,18 +39,7 @@ Makefile.in
 Makefile
 configure
 .libs/
-/build/autotools/compile
-/build/autotools/mathicgb.pc
-/build/autotools/test-driver
-
-# Visual studio generated files
-*.suo
-*.sdf
-*.opensdf
-*.vcxproj.user
-*.psess
-*.vsp
-output/
+/mathicgb.pc
 
 # Configure build targets
 deb/
