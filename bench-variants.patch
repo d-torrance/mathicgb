@@ -1,11 +1,11 @@
 diff --git a/src/mathicgb/F4MatrixReducer.cpp b/src/mathicgb/F4MatrixReducer.cpp
-index 5d6b3da..743955b 100644
+index 4131909..0996b8b 100644
 --- a/src/mathicgb/F4MatrixReducer.cpp
 +++ b/src/mathicgb/F4MatrixReducer.cpp
-@@ -135,14 +135,27 @@ namespace {
-       // time on hyclic8-101-trimmed, yang1 and hilbertkunz1, which is inside
-       // the run-to-run noise on all three. Not measured on clang or MSVC.
-       // Nothing here depends on it, so drop it if it reads better.
+@@ -134,14 +134,27 @@ namespace {
+       // none-the-less, so don't replace entries by mEntries unless you think
+       // it's worth a 14% slowdown of matrix reduction (the whole computation,
+       // not just this method).
 +// Benchmark instrumentation. MATHICGB_BENCH_VARIANT selects which of the hand
 +// optimizations in this method are in effect, so that each can be measured
 +// against the shipped code. 0 is the shipped code.
@@ -30,9 +30,9 @@ index 5d6b3da..743955b 100644
 -        MATHICGB_ASSERT(entries + it.index() == &mEntries[it.index()]);
        }
  #endif
-       // The loop below is unrolled by two by hand, with one iteration peeled
-@@ -160,24 +173,34 @@ namespace {
-       // tried since.
+       // I have a matrix reduction that goes from 2.601s to 2.480s on MSVC 2012
+@@ -151,18 +164,34 @@ namespace {
+       // method).
  
        auto it = begin;
 +#if (MATHICGB_BENCH_VARIANT & 2) != 0
@@ -52,14 +52,8 @@ index 5d6b3da..743955b 100644
 +      }
 +#else
        if (std::distance(begin, end) % 2 == 1) {
--        // This peeled iteration could instead be a goto into the middle of the
--        // loop below, in the manner of Duff's device. That was measured and is
--        // not worth it: 8% to 23% slower on hyclic8-101-trimmed, against 2% to
--        // 11% faster on yang1. Both figures also move by a factor of four in
--        // response to -falign-loops and -falign-jumps, which change only where
--        // the compiler places the loop, so most of the difference is code
--        // layout rather than the branch structure. A hyclic8 regression that
--        // large is not worth chasing a yang1 gain that unstable.
+-        // Replacing this by a goto into the middle of the following loop
+-        // (similar to Duff's device) made the code slower on MSVC 2012.
 -        multiplyAdd(it.scalar(), multiple, entries[it.index()]);
 +        multiplyAdd(it.scalar(), multiple, MATHICGB_BENCH_ENTRIES[it.index()]);
          ++it;

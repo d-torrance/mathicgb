@@ -54,6 +54,13 @@ Four serial builds, one per variant.  Variant bits: 1 = index `mEntries`
 directly instead of via the restrict local, 2 = plain loop instead of the
 unrolling, 4 = Duff's-device goto.  Variant 0 is the shipped code.
 
+`bench-variants.patch` carries context from `F4MatrixReducer.cpp` and so has to
+be regenerated whenever that function changes; `git apply --check` says whether
+it still applies.  One such change is already in flight: PR #77 removes the
+restrict local altogether, having settled that question, so once it lands bit 0
+has nothing left to select and the patch wants rewriting to carry bits 1 and 2
+only.
+
     for V in 0 1 2 4; do
       mkdir -p b/v$V
       (cd b/v$V && ../../configure --with-tbb=no \
