@@ -47,7 +47,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | **DONE** — PR #77; the TBB half became item 21 |
 | 11 | remove `build/setup/make-Makefile.sh` | **DONE** — PR #78 |
 | 12 | remove `build/vs12` | **DONE** — PR #78, which also flattened `build/autotools` away |
-| 13 | autotools `--enable-debug` | open |
+| 13 | autotools `--enable-debug` | **DONE** — PR #79 |
 | 14 | expand the CI matrix | open |
 | 15 | hand-written atomics, live on GCC since 2013 | open |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | open |
@@ -717,12 +717,17 @@ Verified both ways: `make distcheck` passes, which unpacks the tarball and
 builds out of tree against a read-only srcdir, so it exercises the moved
 directories from scratch; and the cmake build passes 246/246 with TBB detected.
 
-## [OPEN] 13. Give the autotools build a --enable-debug
+## [DONE] 13. Give the autotools build a --enable-debug
 
-`configure.ac` and `Makefile.am` never mention `MATHICGB_DEBUG`, so an
+PR #79, merged as b51204c.  It took the first of the two options below.
+`--enable-debug` sets `DEBUG_CFLAGS=-DMATHICGB_DEBUG`, which reaches every
+target through `AM_CPPFLAGS` and installed consumers through `mathicgb.pc`,
+and sets no compiler flags of its own.
+
+`configure.ac` and `Makefile.am` never mentioned `MATHICGB_DEBUG`, so an
 autotools build cannot turn our assertions on at all -- the cmake build is the
-only one that can.  That is the reason the CI matrix in section 14 has 12 real cells
-rather than 16.
+only one that can.  That was the reason the CI matrix in section 14 had 12 real cells
+rather than 16; it now has 16.
 
 Two ways to close it.  Add `--enable-debug` to `configure.ac`, which is parity
 the build system arguably should have anyway, or have CI pass
@@ -747,8 +752,9 @@ four axes worth varying:
 | tbb vs not | `mtbb.hpp`'s hand-rolled `mutex`, `task_arena` and `enumerable_thread_specific` are compiled by nobody today |
 | macos vs ubuntu | already in place; catches AppleClang/libc++ and Homebrew paths |
 
-The full cross product reads as 16 jobs, but only **12 are real today**,
-because the autotools build has no debug mode to vary (see section 13).  Cost is not
+The full cross product is 16 jobs, all of them real since PR #79 gave the
+autotools build a `--enable-debug` (see section 13); before that it was 12,
+because the autotools build had no debug mode to vary.  Cost is not
 the objection -- this is a public repo, Actions minutes are free, and
 `fail-fast: false` is already set.  Three things to get right rather than
 taking the cross product literally:
