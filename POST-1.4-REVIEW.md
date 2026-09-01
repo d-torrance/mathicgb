@@ -58,6 +58,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | five unused macros in `stdinc.h`, four of which do not compile | **DONE** — PR #77 |
+| 24 | a UBSan job, and the 325 misaligned-access reports behind it | open |
 
 ---
 
@@ -1112,6 +1113,71 @@ for uses outside `stdinc.h` reports zero for both:
 Worth doing together with a pass over the file generally: the MSVC branch it
 is half made of cannot be reached, since `stdinc.h:6` has required C++17 since
 PR #60 and Windows is not supported.
+
+## [OPEN] 24. A UBSan job
+
+Split out of section 14, which called it the natural companion to the matrix:
+four of the five commits before this review were UBSan findings, all found by
+hand.  It is a job of a different shape rather than a seventeenth cell, so it
+was left out of PR #80.
+
+Measured 2026-09-01 against the *packaged* dependencies -- `libmathic-dev` and
+`libmemtailor-dev` 1.0~git20230916-1, the same ones CI installs -- with cmake
+Debug, GCC 13.3 and `-fsanitize=undefined` left recoverable so that one run
+collects everything rather than dying on the first report:
+
+| | |
+|---|---|
+| reports | 325 |
+| distinct sites | 113 |
+| tests still passing | 246/246 |
+
+Every one is an alignment error.  Not a single integer overflow, shift, null
+dereference, bounds or vptr error in the whole run:
+
+```
+117  reference binding to misaligned address
+ 98  member access within misaligned address
+ 73  member call on misaligned address
+ 25  load of misaligned address
+ 12  constructor call on misaligned address
+```
+
+179 are in mathic's installed headers, 94 in our own code, and 52 in libstdc++
+headers -- the last being merely where a misaligned object gets touched, not a
+libstdc++ bug.  Our own are dominated by `StaticMonoMap.hpp:54`, the `Entry`
+whose payload is `std::pair<ConstMonoPtr, Data>`: it holds a pointer, so it
+wants 8-byte alignment, and mathic's `KDEntryArray` places it in memtailor
+`Arena` memory on a 4-byte boundary.  mathic's own flagged types (`Extender`,
+`DivMask`) have the same shape.  One cause, not 113 bugs.
+
+Nothing crashes, because x86-64 tolerates misaligned access.  It is still
+undefined behaviour, and it is the class that faults on strict-alignment
+targets -- not hypothetical for a package Debian builds on m68k and powerpc,
+architectures `configure.ac` already names in its `-latomic` check.
+
+**This is fixed in mathic's git already, but not in the Ubuntu package CI
+installs**, so the job cannot gate alignment yet.
+
+What to add now: ubuntu, cmake Debug,
+
+```
+-fsanitize=undefined -fno-sanitize=alignment -fno-sanitize-recover=all
+-fno-omit-frame-pointer -g
+```
+
+with `UBSAN_OPTIONS=print_stacktrace=1`.  `-fno-sanitize-recover=all` is what
+makes the job fail rather than print and pass.  Verified against the packaged
+mathic: 246/246, zero reports, exit 0, in 48 s against 28 s for the same suite
+without the sanitizer.  So it lands green and gates every other class of
+undefined behaviour from day one.
+
+The one real cost is that `-fno-sanitize=alignment` is blunt: it silences new
+alignment UB in our own code as well as the inherited kind.  Targeted runtime
+suppressions would scope it to mathic's headers, but they would not help while
+our own 94 sites share the root cause and would still fire.  The trigger for
+dropping the exclusion is the packaged mathic catching up; our own sites should
+be re-checked then, since they may well go with it.
 
 ## Considered and declined
 
