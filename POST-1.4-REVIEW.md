@@ -48,7 +48,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 11 | remove `build/setup/make-Makefile.sh` | **DONE** — PR #78 |
 | 12 | remove `build/vs12` | **DONE** — PR #78, which also flattened `build/autotools` away |
 | 13 | autotools `--enable-debug` | **DONE** — PR #79 |
-| 14 | expand the CI matrix | open |
+| 14 | expand the CI matrix | **DONE** — PR #80 |
 | 15 | hand-written atomics, live on GCC since 2013 | open |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | open |
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | open |
@@ -740,7 +740,10 @@ not just the library -- that is the bug fixed in item 2, and an autotools
 
 ---
 
-## [OPEN] 14. Expand the CI matrix
+## [DONE] 14. Expand the CI matrix
+
+PR #80, merged as e166dba.  All 16 cells, and all 17 checks green on the
+first run.
 
 Reopened 2026-08-29, having been declined earlier in the review.  There are
 four axes worth varying:
@@ -766,11 +769,56 @@ taking the cross product literally:
 - **`make distcheck` in all four autotools cells is the expensive part.**  It
   configures and builds twice plus a tarball round trip.  Run distcheck in one
   cell (ubuntu, tbb on) and plain `make && make check` in the rest.
+
+  This advice was half wrong, and the reason matters.  distcheck's inner
+  configure receives only `$(AM_DISTCHECK_CONFIGURE_FLAGS)` and
+  `$(DISTCHECK_CONFIGURE_FLAGS)`, neither of which this project sets, and
+  distcheck never builds the outer tree at all -- so in an `--enable-debug`
+  or `--without-tbb` cell it would silently test the default configuration
+  and the axis would mean nothing.  Not a matter of cost.  It also should
+  not be one cell but one *per OS*: the tarball and its install/uninstall
+  machinery are where GNU and BSD userland differ, and the old workflow ran
+  distcheck on macOS.  PR #80 runs it as its own step in the two
+  release-with-TBB cells.
 - **The debug axis is the one to prioritise** if this gets phased in.  It is
   where this release cycle's actual bugs lived.
 
 A UBSan job is the natural companion: four of the five most recent commits
-before this review were UBSan findings, all found by hand.
+before this review were UBSan findings, all found by hand.  Left out of
+PR #80 and written up as item 24, because it is a job of a different shape
+rather than another cell.
+
+### What the first run settled
+
+All eight configurations that nothing had ever compiled -- macOS with
+assertions on, and either OS without TBB -- pass 246/246.  So `mtbb.hpp`'s
+hand-rolled `mutex`, `task_arena` and `enumerable_thread_specific` do still
+work; they had simply never been checked.
+
+The old autotools jobs ran `configure && make distcheck` and nothing else,
+and distcheck does not build the outer tree, so those jobs never compiled
+the configuration they had just configured.  Every autotools cell now runs
+its own `make && make check`; the two distcheck cells show `PASS: unittest`
+twice.
+
+The cmake Debug cells run the suite in about 28 s against 0.5 s for
+Release, which is 898 assertions actually executing -- the axis is real and
+not nominal.
+
+The jobs also build in parallel now, which they never did.  `MAKEFLAGS` is
+set once in the environment, so it reaches the sub-makes distcheck spawns:
+`-j4` on the ubuntu runners and `-j3` on the macOS ones, read back out of
+the `env:` block GitHub prints for each step.  `getconf _NPROCESSORS_ONLN`
+does work on macOS.  Even so the two distcheck cells came in at 154 s and
+171 s against 162 s and 272 s for the old distcheck-only jobs.
+
+One trap worth recording.  `${{ matrix.tbb && '' || '--without-tbb' }}` is
+the natural way to write a flag that is present only when a boolean is
+false, and it is wrong: GitHub's `&&`/`||` is truthiness-based, so the
+empty string on the true branch falls through and *every* cell gets the
+flag.  Write it as `${{ !matrix.tbb && '--without-tbb' || '' }}`, with the
+non-empty value on the taken branch.  Caught by expanding all 16 cells
+before pushing, not by CI, which would have been green either way.
 
 ## [OPEN] 15. Reconsider the hand-written atomics
 
