@@ -24,6 +24,9 @@
 \#*\#
 *~
 
+# Emacs markdown-mode previews of the top-level .md files
+/*.html
+
 # Autotools generated files
 config.log
 config.status

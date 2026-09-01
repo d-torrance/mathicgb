@@ -44,9 +44,9 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 7 | `mgb matrix`'s unvalidated modulus | **DONE** — PR #74 |
 | 8 | three wrong or inconsistent strings in `src/cli`'s help text | **DONE** — PR #75 |
 | 9 | comments that mislead: `isPrime`'s precondition, obsolete compilers, stale URLs | **DONE** — PR #76 |
-| 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | **MEASURED** — F4 loop comments rewritten; TBB cost sized, fix belongs in its own patch |
-| 11 | remove `build/setup/make-Makefile.sh` | open |
-| 12 | remove `build/vs12` | open |
+| 10 | performance claims nobody has checked this decade: TBB default, F4 inner loop | **DONE** — PR #77; the TBB half became item 21 |
+| 11 | remove `build/setup/make-Makefile.sh` | **DONE** — PR #78 |
+| 12 | remove `build/vs12` | **DONE** — PR #78, which also flattened `build/autotools` away |
 | 13 | autotools `--enable-debug` | open |
 | 14 | expand the CI matrix | open |
 | 15 | hand-written atomics, live on GCC since 2013 | open |
@@ -57,7 +57,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
-| 23 | five unused macros in `stdinc.h`, four of which do not compile | open |
+| 23 | five unused macros in `stdinc.h`, four of which do not compile | **DONE** — PR #77 |
 
 ---
 
@@ -412,17 +412,21 @@ GCC 13.3 with `-Dwith_tbb=OFF` (the only build that compiles the
 `mtbb::tick_count` this changes), and clang 18.1.3.  245 tests in 28 suites
 pass in each.
 
-## [MEASURED] 10. Performance claims nobody has checked this decade
+## [DONE] 10. Performance claims nobody has checked this decade
+
+PR #77, merged as b84cbf4, 8166d85 and 45872b6.  That closes the F4 inner-loop
+half; the TBB half turned into item 21 and is still open.
 
 Measured 2026-08-31 on two machines: an i5-6300U (2 physical cores + HT,
 `powersave`, GCC 11.4, x86-64) and an Apple M5 Pro (6 performance cores + 12
 efficiency cores, clang, arm64).  The three
-`F4MatrixReducer::addRowMultiple` claims now have numbers and the comments have
-been rewritten to match.  The TBB question is sized, and turned out to be a
-different problem from the one filed: not a wall-clock regression on one
-pathological input, but a parallel ceiling of 1.2x to 1.8x that applies to
-everything measured, against a default that uses every core.  Capping the
-default belongs in its own patch.
+`F4MatrixReducer::addRowMultiple` claims now have numbers.  PR #77 did not
+rewrite the comments to match, as the first attempt at this item did; it deleted
+the `restrict` local that the false claim existed to justify, and the claim went
+with it.  The TBB question is sized, and turned out to be a different problem
+from the one filed: not a wall-clock regression on one pathological input, but a
+parallel ceiling of 1.2x to 1.8x that applies to everything measured, against a
+default that uses every core.  Capping the default belongs in its own patch.
 
 Both remaining loose ends are closed: the recorded `yang1` baseline is shown
 below not to have been a full run, and `hilbertkunz1` is confirmed too small to
@@ -619,12 +623,15 @@ Three defects surfaced while measuring, none of them what this item set out to
 look at, and all three are worth more than the comment rewrite that item 10
 actually asked for.  They are written up as items 20, 21 and 22.
 
-## [OPEN] 11. Remove build/setup/make-Makefile.sh
+## [DONE] 11. Remove build/setup/make-Makefile.sh
+
+PR #78, commit 4967c4e; open at the time of writing.
 
 Reviewed 2026-08-30 with section 12.  `build/autotools` is fine -- two
 `.gitignore`s and `ax_cxx_compile_stdcxx.m4`, which `configure.ac` calls for
-the C++17 requirement.  The other two subdirectories are unreferenced by
-either build system and cannot work.
+the C++17 requirement.  (It is fine but not well placed; it moved to `m4/` and
+`build-aux/` in the same PR, see the end of section 12.)  The other two
+subdirectories are unreferenced by either build system and cannot work.
 
 A 2013 developer script that cloned and built memtailor, mathic and mathicgb
 together.  Last substantive commit 2013-09-24, and broken three ways over:
@@ -641,7 +648,10 @@ together.  Last substantive commit 2013-09-24, and broken three ways over:
 Referenced only by four mentions in `doc/description.txt`, which want updating
 in the same commit.
 
-## [OPEN] 12. Remove build/vs12
+## [DONE] 12. Remove build/vs12
+
+PR #78, commit b254bfa, together with cd80f1d and 25735e1 for the flattening
+described at the end of this section; open at the time of writing.
 
 Visual Studio *2012* project files.  Last real change 2013-10-03; the two
 commits since are a file-permission fix and the CRLF normalization in f78d6be.
@@ -654,9 +664,13 @@ is missing from `mathicgb-lib.vcxproj`.  `notes.txt` is a 300-line personal
 write-up of clicking through the VS2012 GUI, including how to build gtest 1.6
 with `_VARIADIC_MAX=10`.
 
-Two things go with it.  `.gitattributes:6` sets `*.sln text eol=crlf`, a rule
+Three things go with it.  `.gitattributes:6` sets `*.sln text eol=crlf`, a rule
 that exists solely for `build/vs12/mathicgb.sln` -- there are no other `.sln`,
 `.vcxproj` or `.filters` files anywhere in the tree, so it would match nothing.
+`.gitignore` has a block of seven MSVC artifact rules, one of which (`output/`)
+names vs12's build output directory specifically; the others would still catch
+artifacts from an in-tree cmake build with an MSVC generator, but MSVC is not a
+supported compiler, so the block goes with the project files it was written for.
 And `doc/description.txt` has an entire "Installation for Visual Studio"
 section, lines 166-208 plus its table of contents entry at line 6, which
 documents these project files and asserts that "at this writing (October 3,
@@ -671,9 +685,37 @@ section 15.
 
 Both removals are the same shape as a8035a6 (Remove src/checksource):
 unreferenced, unbuildable, bit-rotted past the point where fixing beats
-deleting.  Two commits.  Afterwards `build/` holds only `autotools/`, at which
-point flattening it is a reasonable follow-up -- but that churns paths in
-`configure.ac` and `Makefile.am`, so it wants to be separate.
+deleting.
+
+### The flattening went into the same PR
+
+This section proposed leaving `build/autotools` alone and flattening it later,
+on the grounds that it churns paths in `configure.ac` and `Makefile.am`.  Doug
+overruled that: the whole point of the PR is that `build/` should not survive
+it, and a directory left holding one tracked file is not a finished cleanup.
+
+`m4/` now holds `ax_cxx_compile_stdcxx.m4` and `build-aux/` holds the scripts
+`autoreconf --install` writes, which is the layout autoconf's own manual and
+gnulib default to -- not the top level, which would put nine generated files
+next to `README.md`.  `build/` is gone.
+
+Two things came out of it that were not in this section:
+
+- `ACLOCAL_AMFLAGS` in `Makefile.am` gave way to `AC_CONFIG_MACRO_DIRS`, which
+  aclocal has traced out of `configure.ac` since automake 1.13.  Otherwise the
+  macro directory is written twice, in two files, where the copies can drift.
+  The cost is that libtoolize 2.4.7 now ends every `autogen.sh` with `Consider
+  adding '-I m4' to ACLOCAL_AMFLAGS in Makefile.am.` -- wrong, since the line
+  above it in its own output reads `putting macros in AC_CONFIG_MACRO_DIRS,
+  'm4'`, but it is new noise.
+- `.gitignore` still listed `/build/autotools/mathicgb.pc`, but `configure` has
+  generated `mathicgb.pc` at the top level since PR #72.  The built file had
+  been showing up as untracked ever since, on both build systems.  Now
+  `/mathicgb.pc`.
+
+Verified both ways: `make distcheck` passes, which unpacks the tarball and
+builds out of tree against a read-only srcdir, so it exercises the moved
+directories from scratch; and the cmake build passes 246/246 with TBB detected.
 
 ## [OPEN] 13. Give the autotools build a --enable-debug
 
@@ -954,7 +996,9 @@ more honest about what the code does.  Low priority -- there is no user-visible
 symptom -- but it is a trap for anyone changing how the default is chosen,
 which item 21 might well involve.
 
-## [OPEN] 23. Five unused macros in `stdinc.h`, four of which do not compile
+## [DONE] 23. Five unused macros in `stdinc.h`, four of which do not compile
+
+PR #77, merged as 45872b6, with 8166d85 for `MATHICGB_RESTRICT` before it.
 
 Found 2026-08-31 after removing `MATHICGB_RESTRICT`, which had exactly one use
 and lost it when the restrict local came out of `DenseRow::addRowMultiple`.
