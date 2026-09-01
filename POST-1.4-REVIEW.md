@@ -568,9 +568,7 @@ iteration, and `F4MatrixBuilder.cpp:153` has the same shape.
 On a laptop that is battery and fan noise.  On a shared machine or a CI runner
 it is two to six times the load for a marginal gain.  Worth the release note,
 and worth a follow-up: **the fix is to cap the default thread count, not to
-turn TBB off.**  Four threads would keep essentially all of the available
-speedup on both inputs at a fraction of the waste.  Choosing the cap properly
-means measuring more than two inputs, so it belongs in its own patch.
+turn TBB off.**  That follow-up is item 21.
 
 One measurement trap, which is likely how a 50% regression came to be recorded
 in the first place.  What mgb prints as "total compute time" is **user + sys,
@@ -1056,38 +1054,30 @@ checking in the same pass.
 
 ## [OPEN] 21. The default thread count uses every core, but nothing scales past four
 
-Found 2026-08-31 while measuring item 10, which has the full tables.
+Found 2026-08-31 while measuring item 10, whose `The TBB default` section holds
+the tables and the argument.  This item is only what to do about them.
 
-`-threadCount 0`, the default, means use every core.  Measured on an 18-thread
-machine, F4's parallel speedup peaks at **1.75x on four threads** for
-`hyclic8-101-trimmed` and **1.18x on two** for `yang1`, and *degrades* above
-that.  An i5-6300U reaches 1.79x on `hyclic8` with two physical cores -- the
-same ceiling the 18-thread machine hits.  Two machines, two compilers, two
-architectures, same wall.  The ceiling is algorithmic.
+In short: F4's parallel speedup peaks at 1.75x on four threads and degrades
+above that, and an i5-6300U hits the same ceiling with two physical cores that
+an M5 Pro hits with four -- two machines, two compilers, two architectures, so
+the ceiling is algorithmic.  `-threadCount 0`, the shipped default, means use
+every core, which puts every user past the peak: 2.03x the CPU for 1.11x the
+wall on `yang1`, and 6.5x the CPU for 1.64x the wall on `hyclic8`.
 
-Past the peak each added thread costs `sys` time roughly linearly and buys
-nothing, so the shipped default puts every user at the far right of that
-curve: 2.03x the CPU for 1.11x the wall on `yang1`, and 6.5x the CPU for 1.64x
-the wall on `hyclic8`.  On a laptop that is battery and fan; on a CI runner or
-a shared machine it is several times the load for a marginal gain.
+Two fixes, not exclusive:
 
-The structural cause is visible: `reduceToEchelonForm`
-(`F4MatrixReducer.cpp:439-511`) puts its `parallel_for` inside a `while` loop,
-with a full join and a global `mtbb::mutex` on every iteration, and
-`F4MatrixBuilder.cpp:153` has the same shape.  The parallel regions are too
-short to amortize the join.
+- **Cap the default.**  Cheap, keeps essentially all of the available speedup,
+  and needs only a defensible number.  Picking that number honestly wants more
+  than the two inputs measured so far, and that measurement is the bulk of the
+  work.
+- **Restructure `reduceToEchelonForm`** so the parallel region spans the
+  `while` loop rather than sitting inside it, with its full join and global
+  `mtbb::mutex` on every iteration (`F4MatrixReducer.cpp:439-511`;
+  `F4MatrixBuilder.cpp:153` has the same shape).  The real fix, and much the
+  larger job.
 
-Two candidate fixes, and they are not exclusive:
-
-- Cap the default at four threads.  Cheap, keeps essentially all of the
-  available speedup, and needs only a defensible number.  Picking it honestly
-  wants more than the two inputs measured so far.
-- Restructure `reduceToEchelonForm` so the parallel region spans the `while`
-  loop rather than sitting inside it.  This is the real fix and much the larger
-  job.
-
-The cap is worth doing first, and on its own.  Note that this is *not* an
-argument for reverting PR #65: TBB still wins on wall time everywhere measured.
+The cap is worth doing first and on its own.  Neither is an argument for
+reverting PR #65: TBB still wins on wall time everywhere measured.
 
 ## [OPEN] 22. Dead store in `setSPairGroupSize`, in two files
 
