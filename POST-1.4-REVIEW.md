@@ -50,7 +50,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 13 | autotools `--enable-debug` | **DONE** — PR #79 |
 | 14 | expand the CI matrix | **DONE** — PR #80 |
 | 15 | hand-written atomics, live on GCC since 2013 | **DONE** — PR #81 |
-| 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | open |
+| 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | **DONE** — PR #82 |
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | open |
 | 18 | a fourth `MATHICGB_ASSERT_NO_ASSUME` on user input, in `StaticMonoMap.hpp` | open |
 | 19 | two `gb` options accept out-of-range values silently | open |
@@ -939,9 +939,31 @@ no worse, this deletes roughly 250 lines of hand-rolled memory-ordering code,
 which is exactly the category of code that is hard to get right -- and the
 kind of thing the UBSan findings in PR #67 suggest is worth a second look.
 
-## [OPEN] 16. `QuadMatrix::read` reads three of four submatrices only in Debug
+## [DONE] 16. `QuadMatrix::read` reads three of four submatrices only in Debug
 
-`src/mathicgb/QuadMatrix.cpp:359` wraps the reads of `topRight`,
+PR #82, merged as 53bad6b.
+
+The Release result turned out to be worse than "differs": it is *empty*.  On
+`cyclic5-1.qmat` the Release build writes 20-byte `.brmat` and `.rbrmat` files
+against Debug's 228, because only `topLeft` was ever read.  The fixed Release
+output is byte-identical to what Debug produced before the fix, so Debug was
+the correct side throughout.
+
+`src/test/QuadMatrix.cpp` is the regression test, and it reproduces the bug
+rather than merely covering the fix: without the fix it fails in Release and
+passes in Debug, which is the defect stated as a test.  Worth recording that
+the gap here was never the CI matrix -- the pre-PR #80 cmake job set no
+`CMAKE_BUILD_TYPE` at all, so it built this broken path too.  Nothing exercised
+`QuadMatrix::read`.
+
+Checked while fixing it: 320c4a5 added exactly two `#ifdef MATHICGB_DEBUG`
+blocks.  The other, at `src/test/gb-test.cpp:251`, wraps
+`Reducer::ReducerType(reducerType)` -- a pure cast, so nothing is lost when it
+compiles out, and it is left alone.  The remaining `#ifdef MATHICGB_DEBUG`
+blocks under `src/mathicgb/` wrap asserts and debug-only helpers, not work the
+release build needs.
+
+`src/mathicgb/QuadMatrix.cpp:359` wrapped the reads of `topRight`,
 `bottomLeft` and `bottomRight` in `#ifdef MATHICGB_DEBUG`, so a Release build
 reads `topLeft` and stops.  The other three quadrants stay empty, the
 reduction runs on them anyway, and the file offset never advances past the
