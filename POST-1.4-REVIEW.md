@@ -51,8 +51,8 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 14 | expand the CI matrix | **DONE** — PR #80 |
 | 15 | hand-written atomics, live on GCC since 2013 | **DONE** — PR #81 |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | **DONE** — PR #82 |
-| 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | open |
-| 18 | a fourth `MATHICGB_ASSERT_NO_ASSUME` on user input, in `StaticMonoMap.hpp` | open |
+| 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR pending |
+| 18 | where input validation belongs, and asserts that outrank their throws | open |
 | 19 | two `gb` options accept out-of-range values silently | open |
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
@@ -987,9 +987,18 @@ same commit did in `SparseMatrix::read` for `colCount`.
 Reachable only through `mgb matrix`, which aborted before it could show the
 difference until PR #74 -- which is why this surfaced now and not in 2022.
 
-## [OPEN] 17. `SparseMatrix::read` truncates the file's modulus to 16 bits
+## [DONE] 17. `SparseMatrix::read` truncates the file's modulus to 16 bits
 
-`src/mathicgb/SparseMatrix.cpp:500` reads the modulus with `readOne<uint32>`
+Fixed on `sparsematrix-modulus`, two commits, PR not yet opened.
+
+Worse than "truncates" in practice: two `.brmat` files identical but for the
+modulus field, 65637 and 101, reduce to byte-identical output, and the 65637
+one is written back out claiming 101.  Silent corruption rather than a misread.
+`read` now rejects the file, through the same error path the rest of the
+function uses, and `src/test/SparseMatrix.cpp` covers it -- the test fails
+without the check.
+
+`src/mathicgb/SparseMatrix.cpp:500` read the modulus with `readOne<uint32>`
 and returns it as `SparseMatrix::Scalar`, which is `uint16`.  A file claiming
 65637 yields 101, and the primality check PR #74 adds sees only the truncated
 value, so it passes and the reduction proceeds over a field the file did not
@@ -1001,16 +1010,14 @@ meaningless in this format regardless.  The fix is to reject a modulus that
 does not fit rather than silently reinterpret it, inside `read` where the
 `uint32` is still intact.
 
-That is also the place a modulus check would have to live to be testable at
-all.  `mathicgb-unit-tests` links only `libmathicgb`; no `src/cli` object is
-in it and there is no CLI-level harness, so the check PR #74 adds has no unit
-test and cannot be given one where it stands.  Moving the validation into
-`SparseMatrix::read` and `QuadMatrix::read` would close this item and make
-7 testable in one move.
+## [OPEN] 18. Where input validation belongs, and asserts that outrank their throws
 
-## [OPEN] 18. A fourth assert-on-user-input, in `StaticMonoMap.hpp`
+Three findings that are one decision.  Absorbed 2026-09-02 from sections 17
+and 23, which each raised part of it.
 
-`src/mathicgb/StaticMonoMap.hpp:431` is 1 all over again:
+### The immediate bug: `StaticMonoMap.hpp:431`
+
+Item 1 all over again:
 
 ```cpp
   default:
@@ -1018,9 +1025,8 @@ test and cannot be given one where it stands.  Moving the validation into
     throw std::runtime_error("Unknown code for monomial data structure");
 ```
 
-PR #69 fixed three sites of exactly this shape in `F4MatrixBuilder2.cpp`,
-`F4MatrixBuilder.cpp` and `F4MatrixReducer.cpp`; this one was not in that
-list because I found the three by grepping the F4 files.  It is reachable
+PR #69 dealt with three sites of exactly this shape; this one was not in that
+list because those three were found by grepping the F4 files.  It is reachable
 from ordinary command line input, `-divisorLookup` being validated nowhere
 earlier:
 
@@ -1038,9 +1044,64 @@ throwing is the correct answer.  Only the assert has to go, exactly as in
 PR #66's reasoning: a Debug build must not abort on input a Release build
 handles.  One line.
 
-A grep for `MATHICGB_ASSERT_NO_ASSUME` across the tree would be worth doing
-in the same pass, to find out whether 19 is the last of these or merely the
-fourth.
+### The grep this section asked for, done
+
+All 13 `MATHICGB_ASSERT_NO_ASSUME` sites outside `stdinc.h`, classified:
+
+| site | verdict |
+|---|---|
+| `StaticMonoMap.hpp:431` | **the bug above** -- asserts on `-divisorLookup` |
+| `F4MatrixBuilder.cpp:67`, `F4MatrixBuilder2.cpp:282`, `F4MatrixReducer.cpp:778` | fine now.  PR #69 put the check in `F4Reducer`'s constructor and said so: "Establishing the bound here lets F4MatrixBuilder, F4MatrixBuilder2 and F4MatrixReducer assert it."  They assert an invariant established earlier, which is what asserts are for |
+| `SigPolyBasis.hpp:221,224,227,250,253,256` | fine.  Checks a cached ratio rank against a freshly computed comparison -- pure internal invariant |
+| `mathicgb.cpp:389,656,761` | fine.  `!hasBeenDestroyed` on use-after-destroy.  Assert-only, with no throw to be inconsistent with, and no correct recovery available |
+
+So `StaticMonoMap.hpp:431` is the last of this shape, not merely the fourth.
+The macro itself is not the problem, and the other 12 uses should stay.
+
+### The same defect in the streaming interface, at 20 sites
+
+Found while writing up section 23.  `MATHICGB_STREAM_CHECK`
+(`src/mathicgb.cpp:22-36`) asserts before it throws:
+
+```cpp
+  const bool value = (X); \
+  if (!value) { \
+    MATHICGB_ASSERT(( ... , false )); \
+    throw std::invalid_argument( ... ); \
+  }
+```
+
+So a Debug build aborts where a Release build throws, on exactly the caller
+protocol violations the macro exists to report -- calling `idealBegin()` twice,
+and so on.  Twenty sites, in the public streaming interface.
+
+Nothing catches it: every test that constructs an `IdealStreamChecker` uses the
+protocol correctly, so no check ever fires, and before PR #80 no CI cell built
+this code with assertions at all.
+
+### Where the checks belong, which is the reason to do these together
+
+Section 17 found that a check in the right place is also a check that can be
+tested.  `mathicgb-unit-tests` links only `libmathicgb`: no `src/cli` object is
+in it and there is no CLI-level harness, so PR #74's primality check, which
+lives in `MatrixAction.cpp`, has no unit test and cannot be given one where it
+stands.  Moving that validation into `SparseMatrix::read` and
+`QuadMatrix::read` would make item 7 testable -- and PR #82's new
+`src/test/QuadMatrix.cpp` and section 17's new `SparseMatrix` test are already
+the harness it would use.
+
+That is the through-line.  Each of these is a question about where a check
+belongs and what it should do when it fires, and they should get one answer
+rather than three:
+
+- a check on user input belongs where the input is still intact and where a
+  test can reach it, not in the CLI;
+- when it fires it throws, and it does not also assert, because a Debug build
+  must not abort on input a Release build handles.
+
+The `StaticMonoMap.hpp` line is a one-line change and could go on its own
+today.  The other two are a small design change to the library's input
+handling, and are worth doing in one PR with a test for each check moved.
 
 ## [OPEN] 19. Two `gb` options accept out-of-range values silently
 
@@ -1255,29 +1316,9 @@ still reaching the assertion text.  It also retires the
 `[[maybe_unused]] const bool ignoreMe = false;` line above it, which is
 declared, never used, and looks like an earlier attempt at this same problem.
 
-### The part worth more than the warning
-
-The macro asserts *before* it throws:
-
-    const bool value = (X); \
-    if (!value) { \
-      MATHICGB_ASSERT(( ... , false )); \
-      throw std::invalid_argument( ... ); \
-    }
-
-So a Debug build aborts where a Release build throws, on caller error -- the
-protocol violations this macro exists to report, such as calling `idealBegin()`
-twice.  That is the shape of items 1 and 18, at 20 more sites, in the public
-streaming interface.
-
-Nothing catches it today because every test that constructs an
-`IdealStreamChecker` uses the protocol correctly, so no check ever fires; and
-before PR #80 no CI cell built this code with assertions at all.
-
-The two are separable and should stay separate.  Fixing the warning does not
-change the abort, and deciding what these checks should do on caller error is
-the same decision items 1 and 18 record, so it wants their answer, not a new
-one.
+Underneath the warning, the same macro also asserts before it throws, at 20
+sites in the public streaming interface.  That is item 18's subject, not this
+one's: fixing the warning does not change the abort, and the two are separable.
 
 ### Also in those logs, and not worth items of their own
 
