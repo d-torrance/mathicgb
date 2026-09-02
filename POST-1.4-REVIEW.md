@@ -49,7 +49,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 12 | remove `build/vs12` | **DONE** — PR #78, which also flattened `build/autotools` away |
 | 13 | autotools `--enable-debug` | **DONE** — PR #79 |
 | 14 | expand the CI matrix | **DONE** — PR #80 |
-| 15 | hand-written atomics, live on GCC since 2013 | open |
+| 15 | hand-written atomics, live on GCC since 2013 | **DONE** — PR #81 |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | open |
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | open |
 | 18 | a fourth `MATHICGB_ASSERT_NO_ASSUME` on user input, in `StaticMonoMap.hpp` | open |
@@ -58,6 +58,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
+| 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | open |
 
 ---
 
@@ -882,9 +883,37 @@ flag.  Write it as `${{ !matrix.tbb && '--without-tbb' || '' }}`, with the
 non-empty value on the taken branch.  Caught by expanding all 16 cells
 before pushing, not by CI, which would have been green either way.
 
-## [OPEN] 15. Reconsider the hand-written atomics
+## [DONE] 15. Reconsider the hand-written atomics
 
-`src/mathicgb/Atomic.hpp` is 398 lines implementing atomic load and store by
+PR #81, merged as eb2581c and the three commits before it.  It went further
+than this section proposed: not just the implementation but `Atomic<T>`
+itself, `MATHICGB_USE_FAKE_ATOMIC`, and the `doc/description.txt` section
+describing them.  About 440 lines, against the 250 estimated below.
+
+The premise was understated.  `std::atomic` is not merely no worse: compiled
+at `-O2` with GCC 13.3 on x86-64 the two emit the same instructions for every
+load and for relaxed and release stores, and on the one operation where they
+differ -- the sequentially consistent store -- the hand-written version is the
+*worse* of the two, `movq` plus `lock cmpxchgq` plus a retry branch against a
+single `xchgq`.  Timing could not see it, and did not need to: where the
+emitted code is identical there is nothing to time.
+
+Removing the wrapper as well needed its own evidence, since `Atomic<T>` was
+not equivalent to `std::atomic<T>`.  Its constructor value-initialized, where
+`std::atomic`'s default constructor is trivial in C++17, and that is why
+`FixedSizeMonomialMap` nulls its buckets by hand.  Deleting the nulling from
+both constructors and rebuilding each way settles what the wrapper was worth:
+with it the tests still pass 246/246, without it the same build segfaults, and
+valgrind reports the buckets walked as a hash chain in
+`F4MatrixBuilder2::findOrCreateColumn` under TBB.  Both constructors now say
+why the nulling is required.
+
+One measurement trap, recorded so it is not rediscovered: multithreaded `.gb`
+output is not reproducible.  The same binary produced five different hashes on
+five consecutive `cyclic7` runs, and identical output at `-threadCount 1`.  A
+first comparison of the two builds looked like a discrepancy and was not one.
+
+`src/mathicgb/Atomic.hpp` was 398 lines implementing atomic load and store by
 hand: compiler barriers via `__asm__ __volatile__ ("" ::: "memory")`, CPU
 fences via `__sync_synchronize()`, and a CAS loop on
 `__sync_bool_compare_and_swap` -- GCC's legacy pre-C++11 builtins -- with
@@ -1168,6 +1197,76 @@ suppressions would scope it to mathic's headers, but they would not help while
 our own 94 sites share the root cause and would still fire.  The trigger for
 dropping the exclusion is the packaged mathic catching up; our own sites should
 be re-checked then, since they may well go with it.
+
+## [OPEN] 24. 19 clang warnings in mathicgb.cpp, and an assert that outranks its throw
+
+Found 2026-09-02 in PR #81's CI, in the macOS debug cells -- which is the
+point: nothing built macOS with assertions before PR #80 added them, so these
+have been there unseen.  19 warnings, all in `src/mathicgb.cpp`, all the same:
+
+```
+../src/mathicgb.cpp:136:7: warning: left operand of comma operator has no
+effect [-Wunused-value]
+  136 |  MATHICGB_STREAM_CHECK(isPrime(modulus), "The modulus must be prime");
+../src/mathicgb.cpp:28:9: note: expanded from macro 'MATHICGB_STREAM_CHECK'
+```
+
+They appear in all four macOS debug cells, cmake and autotools alike, and in
+none of the ubuntu cells and none of the release cells.  Debug-only because
+`MATHICGB_ASSERT` is empty otherwise; clang-only because GCC does not warn on
+this.  Reproduced locally with clang 18.1.3: the same 19, at the same sites.
+
+The cause is the `assert(("message", condition))` idiom in
+`MATHICGB_STREAM_CHECK` (`mathicgb.cpp:22-36`), which smuggles the message
+into what `assert` stringifies.  The left operand genuinely has no effect, so
+the warning is correct even though the intent is fine.
+
+The fix is one line, to the conventional spelling:
+
+    MATHICGB_ASSERT(false && \
+      "MathicGB stream protocol error: "#MSG \
+      "\nAssert expression: "#X"\n" \
+    );
+
+Verified: 0 warnings from clang 18.1.3 and 0 from GCC 13.3, with the message
+still reaching the assertion text.  It also retires the
+`[[maybe_unused]] const bool ignoreMe = false;` line above it, which is
+declared, never used, and looks like an earlier attempt at this same problem.
+
+### The part worth more than the warning
+
+The macro asserts *before* it throws:
+
+    const bool value = (X); \
+    if (!value) { \
+      MATHICGB_ASSERT(( ... , false )); \
+      throw std::invalid_argument( ... ); \
+    }
+
+So a Debug build aborts where a Release build throws, on caller error -- the
+protocol violations this macro exists to report, such as calling `idealBegin()`
+twice.  That is the shape of items 1 and 18, at 20 more sites, in the public
+streaming interface.
+
+Nothing catches it today because every test that constructs an
+`IdealStreamChecker` uses the protocol correctly, so no check ever fires; and
+before PR #80 no CI cell built this code with assertions at all.
+
+The two are separable and should stay separate.  Fixing the warning does not
+change the abort, and deciding what these checks should do on caller error is
+the same decision items 1 and 18 record, so it wants their answer, not a new
+one.
+
+### Also in those logs, and not worth items of their own
+
+- `ld: warning: -single_module is obsolete` and `ld: warning: -bind_at_load is
+  deprecated on macOS`, in every macOS autotools cell.  Both flags come from
+  libtool, not from us.
+- `Makefile.am:64: warning: wildcard \ $(top_srcdir: non-POSIX variable name`,
+  from automake on every autotools cell including ubuntu.  That is the
+  `$(wildcard ...)` in `mathicgbB_include_HEADERS`, which installs the headers
+  by glob rather than by list.  It predates this review and is the only
+  automake warning in the build.
 
 ## Considered and declined
 
