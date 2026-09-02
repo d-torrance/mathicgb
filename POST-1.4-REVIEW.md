@@ -51,7 +51,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 14 | expand the CI matrix | **DONE** — PR #80 |
 | 15 | hand-written atomics, live on GCC since 2013 | **DONE** — PR #81 |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | **DONE** — PR #82 |
-| 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR pending |
+| 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR #83 |
 | 18 | where input validation belongs, and asserts that outrank their throws | open |
 | 19 | two `gb` options accept out-of-range values silently | open |
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
@@ -989,7 +989,7 @@ difference until PR #74 -- which is why this surfaced now and not in 2022.
 
 ## [DONE] 17. `SparseMatrix::read` truncates the file's modulus to 16 bits
 
-Fixed on `sparsematrix-modulus`, two commits, PR not yet opened.
+PR #83, merged as d255e43 and d55763f.
 
 Worse than "truncates" in practice: two `.brmat` files identical but for the
 modulus field, 65637 and 101, reduce to byte-identical output, and the 65637
