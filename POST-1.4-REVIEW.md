@@ -52,13 +52,14 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 15 | hand-written atomics, live on GCC since 2013 | **DONE** — PR #81 |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | **DONE** — PR #82 |
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR #83 |
-| 18 | where input validation belongs, and asserts that outrank their throws | open |
+| 18 | where input validation belongs, and asserts that outrank their throws | **PARTLY DONE** — parts 1 and 2 on `assert-on-user-input`, unpushed; part 3 open |
 | 19 | two `gb` options accept out-of-range values silently | open |
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
-| 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | open |
+| 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — ecd68c4, with item 18's part 2 |
+| 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
 
 ---
 
@@ -1010,10 +1011,14 @@ meaningless in this format regardless.  The fix is to reject a modulus that
 does not fit rather than silently reinterpret it, inside `read` where the
 `uint32` is still intact.
 
-## [OPEN] 18. Where input validation belongs, and asserts that outrank their throws
+## [PARTLY DONE] 18. Where input validation belongs, and asserts that outrank their throws
 
 Three findings that are one decision.  Absorbed 2026-09-02 from sections 17
 and 23, which each raised part of it.
+
+Parts 1 and 2 are done on `assert-on-user-input`, which is unpushed and has
+no PR.  Part 3 -- moving the matrix validation -- is still open.  Part 1 did
+not take the route proposed below; see the note under it.
 
 ### The immediate bug: `StaticMonoMap.hpp:431`
 
@@ -1043,6 +1048,20 @@ The Release behaviour is right -- a bad `-divisorLookup` is user error and
 throwing is the correct answer.  Only the assert has to go, exactly as in
 PR #66's reasoning: a Debug build must not abort on input a Release build
 handles.  One line.
+
+**Done differently**, in 41dce00 and ac4054b.  Deleting the assert would have
+left the value unchecked until it reached a switch four call levels down, so
+the branch followed PR #69's precedent instead: check the code at the two
+entry points that take it from outside -- `MonoLookup::makeFactory` and
+`ModuleMonoSet::make` -- and leave the assert alone, now guarding an
+invariant rather than user input.  The error names the bad value and lists
+the valid codes, and `src/test/MonoLookup.cpp` covers both entry points.
+
+That turned up a path this section had missed.  `-monomialTable` reaches
+`ModuleMonoSet::make` and aborted the same way, so `mgb sig -monomialTable
+99` is now an error too.  `mgb gb -monomialTable 99` still exits 0, because
+the `gb` action never reads the value -- that is item 19's first bullet, and
+it is unchanged.
 
 ### The grep this section asked for, done
 
@@ -1078,6 +1097,11 @@ and so on.  Twenty sites, in the public streaming interface.
 Nothing catches it: every test that constructs an `IdealStreamChecker` uses the
 protocol correctly, so no check ever fires, and before PR #80 no CI cell built
 this code with assertions at all.
+
+**Done** in ecd68c4.  The assert is gone and the macro only throws, and
+`src/test/mathicgb.cpp` now drives a `StreamStateChecker` into three
+protocol violations -- the first time any of these twenty checks has been
+exercised.  It closed item 24 as a side effect and exposed item 25.
 
 ### Where the checks belong, which is the reason to do these together
 
@@ -1281,7 +1305,13 @@ our own 94 sites share the root cause and would still fire.  The trigger for
 dropping the exclusion is the packaged mathic catching up; our own sites should
 be re-checked then, since they may well go with it.
 
-## [OPEN] 24. 19 clang warnings in mathicgb.cpp, and an assert that outranks its throw
+## [DONE] 24. 19 clang warnings in mathicgb.cpp, and an assert that outranks its throw
+
+Fixed by ecd68c4 on `assert-on-user-input`, as part of item 18; unpushed and
+not yet in a PR.  Not by the respelling proposed below, but by deleting the
+assert altogether, which removes the comma-operator idiom the warning is
+about.  clang 18.1.3 reports 19 warnings in this file before and 0 after.
+The two loose ends recorded at the end of this section are untouched.
 
 Found 2026-09-02 in PR #81's CI, in the macOS debug cells -- which is the
 point: nothing built macOS with assertions before PR #80 added them, so these
@@ -1330,6 +1360,75 @@ one's: fixing the warning does not change the abort, and the two are separable.
   `$(wildcard ...)` in `mathicgbB_include_HEADERS`, which installs the headers
   by glob rather than by list.  It predates this review and is the only
   automake warning in the build.
+
+## [OPEN] 25. The `Pimpl` pointers are raw, and two constructors get it wrong
+
+Found 2026-09-18 while doing item 18's part 2.
+
+`src/mathicgb.h` declares three `Pimpl* const mPimpl` members -- at `:300`
+(`GroebnerConfiguration`), `:342` (`GroebnerInputIdealStream`) and `:524`
+(`mgbi::StreamStateChecker`).  Each is allocated in a mem-initializer list, so
+a constructor body that throws leaks it: the object was never constructed, so
+the destructor never runs.  Two of those constructors can throw, and they fail
+in opposite directions.
+
+### The leak, which is reachable
+
+`GroebnerConfiguration::GroebnerConfiguration` (`src/mathicgb.cpp:410`)
+allocates the `Pimpl` and then rejects a composite modulus at `:416` with
+`mathic::reportError`.  Nothing frees it.  Under ASan, constructing
+`GroebnerConfiguration(4, 2, 1)`:
+
+```
+Direct leak of 120 byte(s) in 1 object(s) allocated from:
+    #1 mgb::GroebnerConfiguration::GroebnerConfiguration(unsigned int, unsigned long, unsigned int)
+SUMMARY: AddressSanitizer: 128 byte(s) leaked in 2 allocation(s).
+```
+
+`RejectsCompositeModulus` (`src/test/mathicgb.cpp:913`) drives that path five
+times, so the suite has leaked this on every run since the test was added.
+Nothing notices because no job runs a sanitizer; item 23's, once it exists, is
+what would catch it.
+
+### The double free, which is not
+
+`StreamStateChecker`'s constructor (`src/mathicgb.cpp:128`) does remember the
+cleanup, and then swallows the exception:
+
+```cpp
+    try {
+      MATHICGB_STREAM_CHECK(isPrime(modulus), "The modulus must be prime");
+      MATHICGB_ASSERT(mPimpl->debugAssertValid());
+    } catch (...) {
+      delete mPimpl;
+    }
+```
+
+No rethrow, so the constructor completes with `mPimpl` dangling and the
+destructor deletes it a second time.  Every other `catch (...)` in the sources
+cleans up and rethrows -- `ClassicGBAlg.cpp:308`, `MESClassicGBAlg.cpp:290`,
+`GBMain.cpp:44` -- so this is an omission rather than a choice.
+
+It is unreachable through the public interface.  The checker takes its modulus
+from `conf.modulus()` (`src/mathicgb.cpp:620`), and `GroebnerConfiguration` has
+already rejected a composite one by then -- which is the leak above.  Only
+direct construction of `mgbi::StreamStateChecker`, which nothing but a test
+does, reaches it.  Before ecd68c4 the assert in `MATHICGB_STREAM_CHECK` fired
+first and hid it in Debug; in Release it has been a double free all along.
+
+### One fix for both
+
+`std::unique_ptr<Pimpl>` for all three members.  The try/catch in
+`StreamStateChecker` then goes away rather than gets corrected, the
+`GroebnerConfiguration` leak goes away without anyone having to remember a
+cleanup path, and the `delete mPimpl` in each destructor goes with it.
+`Pimpl` is a complete type at every point that matters -- all three are
+defined in `src/mathicgb.cpp` alongside their users -- so the destructor
+requirement is already met.
+
+A one-line `throw;` in `StreamStateChecker` was written, tested and then
+declined: it corrects the unreachable half, leaves the reachable one, and the
+`unique_ptr` conversion would immediately undo it.
 
 ## Considered and declined
 
