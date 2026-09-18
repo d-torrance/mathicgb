@@ -52,13 +52,13 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 15 | hand-written atomics, live on GCC since 2013 | **DONE** — PR #81 |
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | **DONE** — PR #82 |
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR #83 |
-| 18 | where input validation belongs, and asserts that outrank their throws | **PARTLY DONE** — parts 1 and 2 on `assert-on-user-input`, unpushed; part 3 open |
+| 18 | where input validation belongs, and asserts that outrank their throws | **DONE** — PR #85, all three parts |
 | 19 | two `gb` options accept out-of-range values silently | open |
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
-| 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — ecd68c4, with item 18's part 2 |
+| 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
 
 ---
@@ -1011,14 +1011,16 @@ meaningless in this format regardless.  The fix is to reject a modulus that
 does not fit rather than silently reinterpret it, inside `read` where the
 `uint32` is still intact.
 
-## [PARTLY DONE] 18. Where input validation belongs, and asserts that outrank their throws
+## [DONE] 18. Where input validation belongs, and asserts that outrank their throws
+
+PR #85, four commits: 41dce00, ac4054b, ecd68c4 and 2f12500.
 
 Three findings that are one decision.  Absorbed 2026-09-02 from sections 17
 and 23, which each raised part of it.
 
-Parts 1 and 2 are done on `assert-on-user-input`, which is unpushed and has
-no PR.  Part 3 -- moving the matrix validation -- is still open.  Part 1 did
-not take the route proposed below; see the note under it.
+All three are done, and two of them did not come out the way this section
+proposed -- see the notes under each.  It closed item 24 along the way and
+turned up item 25.
 
 ### The immediate bug: `StaticMonoMap.hpp:431`
 
@@ -1102,6 +1104,21 @@ this code with assertions at all.
 `src/test/mathicgb.cpp` now drives a `StreamStateChecker` into three
 protocol violations -- the first time any of these twenty checks has been
 exercised.  It closed item 24 as a side effect and exposed item 25.
+
+**Done** in 2f12500, and it was one change rather than two.  The check went
+into `SparseMatrix::read` beside the size check from PR #83, and
+`QuadMatrix::read` needed nothing of its own: it reads its four submatrices
+through `SparseMatrix::read`, so all four are checked.  This section assumed
+two changes where one does.
+
+It also covered a read the CLI never checked at all -- the reference
+`.rbrmat` a second run compares its output against -- and the file name,
+which `read` cannot know, is now supplied by the CLI on the way past:
+
+```
+While reading composite.brmat:
+ERROR: The modulus 100 is not prime. MathicGB only supports prime fields.
+```
 
 ### Where the checks belong, which is the reason to do these together
 
@@ -1307,11 +1324,11 @@ be re-checked then, since they may well go with it.
 
 ## [DONE] 24. 19 clang warnings in mathicgb.cpp, and an assert that outranks its throw
 
-Fixed by ecd68c4 on `assert-on-user-input`, as part of item 18; unpushed and
-not yet in a PR.  Not by the respelling proposed below, but by deleting the
-assert altogether, which removes the comma-operator idiom the warning is
-about.  clang 18.1.3 reports 19 warnings in this file before and 0 after.
-The two loose ends recorded at the end of this section are untouched.
+Fixed by ecd68c4, in PR #85 as part of item 18.  Not by the respelling
+proposed below, but by deleting the assert altogether, which removes the
+comma-operator idiom the warning is about.  clang 18.1.3 reports 19
+warnings in this file before and 0 after.  The two loose ends recorded at
+the end of this section are untouched.
 
 Found 2026-09-02 in PR #81's CI, in the macOS debug cells -- which is the
 point: nothing built macOS with assertions before PR #80 added them, so these
