@@ -53,13 +53,15 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 16 | `QuadMatrix::read` reads three of four submatrices only in Debug | **DONE** — PR #82 |
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR #83 |
 | 18 | where input validation belongs, and asserts that outrank their throws | **DONE** — PR #85, all three parts |
-| 19 | two `gb` options accept out-of-range values silently | open |
+| 19 | `mgb gb` advertises `-monomialTable`, which only `sig` reads | **DONE** — PR #86 |
 | 20 | `total compute time` reports CPU time as if it were elapsed | open |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
+| 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
+| 27 | the S-pair queue choice is dead, and only mathic can bring it back | open — **last deliberately**, the one item needing a mathic change |
 
 ---
 
@@ -1144,26 +1146,50 @@ The `StaticMonoMap.hpp` line is a one-line change and could go on its own
 today.  The other two are a small design change to the library's input
 handling, and are worth doing in one PR with a test for each check moved.
 
-## [OPEN] 19. Two `gb` options accept out-of-range values silently
+## [DONE] 19. `mgb gb` advertises `-monomialTable`, which only `sig` reads
 
-Found while surveying the CLI defaults for 8.
+PR #86, commit 61b992b.
 
-- `mgb gb -monomialTable 99` exits 0 and computes normally.
-  `mMonomialTable` is read only by `SigGBAction.cpp:70`, so for the `gb`
-  action the option does nothing whatever -- any value is accepted because
-  none is used.  It is offered by `GBCommonParams`, which both actions
-  share, so `mgb help gb` advertises it.
-- `mgb gb -spairQueue 99` also exits 0, but this one is passed on:
-  `GBAction.cpp:103` assigns it to `params.sPairQueueType` and the value
-  reaches the algorithm unchecked.
+Found while surveying the CLI defaults for 8.  Narrowed 2026-09-18: this
+section used to carry `-spairQueue` as well, and to propose validation for
+both.  Investigating that found `-spairQueue` is not unvalidated but dead,
+which is a different problem with a different fix; it is now item 27.
 
-Contrast `-divisorLookup`, which throws on an unknown code (see 18), and
-`-reducer`, which quietly substitutes its default (see 8).  Three options
-selecting a data structure, three different answers to the same bad input.
+`mgb gb -monomialTable 99` exits 0 and computes normally.  `mMonomialTable`
+is read only by `SigGBAction.cpp:70`, so for the `gb` action the option does
+nothing whatever -- any value is accepted because none is used.  It is
+offered by `GBCommonParams`, which both actions share, so `mgb help gb`
+advertises it.
 
-The fix worth having is validating each of these where it is parsed, so a
-typo is refused rather than ignored.  Deciding whether `gb` should advertise
-an option it does not use is a separate question, and the smaller one.
+Under `sig` the option works, and PR #85 now validates it: `mgb sig
+-monomialTable 99` is refused, in Debug and Release alike.  So the
+inconsistency is no longer about how a bad value is handled.  It is that one
+action advertises an option it never reads, and accepts every value for it,
+good or bad, because none reaches anything.
+
+Contrast `-divisorLookup`, which both actions read and PR #85 validates, and
+`-reducer`, which quietly substitutes its default (see 8).
+
+The fix was to stop `gb` offering it: the parameter moved out of
+`GBCommonParams` into `SigGBAction`'s own parameters, so `sig` keeps it with
+its validation and `gb` no longer lists it.  Validating it for `gb` would
+have been the wrong shape -- it would reject a typo for an option that does
+nothing with a correct value either.
+
+Making it work under `gb` was considered and has nowhere to go.  `PolyBasis`
+holds one lookup structure, a `MonoLookup` (`PolyBasis.hpp:226`), and
+`-divisorLookup` already selects it from the same four codes through the same
+`staticMonoLookupMake`.  A working `-monomialTable` for `gb` could only
+duplicate `-divisorLookup`.
+
+Found along the way: this is a misfiling, not a regression.  At `31d363b`
+there was one action and one flat option list, and the option fed the
+signature code from it.  `399c07b` split `gb` and `siggb`, and `4753243`
+sorted the options into `GBCommonParams` for the shared ones -- putting this
+one there although `SigGBAction` already had its own parameter list.  It has
+never worked under `gb`, not for a day.
+
+Also found: `SigPolyBasis` takes the value and ignores it, which is item 26.
 
 ## [OPEN] 20. `total compute time` reports CPU time as if it were elapsed
 
@@ -1446,6 +1472,124 @@ requirement is already met.
 A one-line `throw;` in `StreamStateChecker` was written, tested and then
 declined: it corrects the unreachable half, leaves the reachable one, and the
 `unique_ptr` conversion would immediately undo it.
+
+## [OPEN] 26. `SigPolyBasis` takes a monomial table code it has never used
+
+Found 2026-09-18 while doing item 19.
+
+`SigPolyBasis`'s constructor takes `int monTableType` (`SigPolyBasis.hpp:38`,
+`SigPolyBasis.cpp:18`) and the definition never mentions it again.
+`SignatureGB` passes the `-monomialTable` value to two places -- `SigPolyBasis`
+and the `Hsyz` module monomial sets -- and only the second reads it.
+
+Not recent decay.  At the initial commit, `31d363b`, the ancestor class
+`GroebnerBasis` took the same `int monTableType` and its `.cpp` never
+referenced it either.  Dead since 2012-07-09.
+
+Harmless in itself, since the value is computed for `Hsyz` regardless.  It is
+recorded because it is the third instance of one pattern, and the three are
+worth one decision rather than three:
+
+| site | what is dead |
+|---|---|
+| `SigPolyBasis.hpp:38` | `monTableType`, never read -- this item |
+| `ClassicGBAlg.cpp:122`, `SigSPairs.cpp:23` | `queueType`, `(void)`-cast away -- item 27 |
+| `ClassicGBAlg.cpp:150` | the `setSPairGroupSize` dead store -- item 22 |
+
+`monTableType` is the one that can go on its own.  The `queueType` parameters
+have to wait for item 27, since restoring that option would want them back;
+nothing would ever bring `monTableType` back, because `-monomialTable`
+reaches `Hsyz` directly without it.
+
+## [OPEN] 27. The S-pair queue choice is dead, and only mathic can bring it back
+
+Found 2026-09-18 on starting item 19, which had assumed `-spairQueue` was
+merely unvalidated.  Placed last deliberately: it is the only item that
+cannot be finished without a change to mathic, and everything ahead of it can
+be done without one.
+
+### It does nothing at all
+
+`queueType` is threaded through four layers and discarded at both ends --
+`ClassicGBAlg.cpp:141` and `SigSPairs.cpp:36` are each `(void)queueType;`.
+On `cyclic5`, codes 0, 1, 2, 3 and 99 all give byte-identical output and the
+same reported queue type, and `mgb` prints one fixed answer regardless:
+
+```
+S-pair queue type:  PairQueue-t-tree (si)
+```
+
+Meanwhile `mgb help gb` advertises four choices.
+
+`28fb618`, "Removed PairTriangle as it is no longer used (it's replaced by
+the mathic version)", orphaned it in 2013.  `33d4394`, "Fix unused parameter
+compiler warnings", then added the `(void)` casts that have kept it quiet.
+
+### What it used to select
+
+Not four things.  Two bits, at `31d363b`, `PairTriangle.cpp:98-104`:
+
+```cpp
+PairTriangle::PairTriangle(const FreeModuleOrder& order, const PolyRing& ring,
+                           size_t queueType):
+  mUseSingletonGroups((queueType & 2) != 0),
+  mQueue(order.makeQueue((queueType & 1))),
+```
+
+Bit 0 chose the priority queue -- `FreeModuleOrder::makeQueue` switched
+`mic::TourTree` against `mic::Heap`.  Bit 1 chose whether S-pairs were staged
+behind the triangle: clear meant one group per newly added basis element with
+only its smallest pair competing in the queue, set meant every pair pushed
+individually.
+
+| code | bit 1 | bit 0 | help text |
+|---|---|---|---|
+| 0 | staged behind triangle | TourTree | tournament tree in front of triangle |
+| 1 | staged behind triangle | Heap | heap in front of triangle |
+| 2 | every pair in the queue | TourTree | tournament tree |
+| 3 | every pair in the queue | Heap | heap |
+
+### Half of it can come back, and only through mathic
+
+Bit 0 looks cheap.  `mathic::Heap` implements all eight operations
+`PairQueue` calls on its column queue -- `push`, `pop`, `top`, `empty`,
+`decreaseTop`, `forAll`, `getName`, `getMemoryUse` -- and
+`TourTreeSuggestedOptions` is an empty class, so the base it contributes
+costs nothing to generalise.  The hardcoding is one line, `PairQueue.h:371`:
+
+```cpp
+typedef TourTree<QueueConfiguration> ColumnQueue;
+```
+
+A template parameter defaulting to `TourTree` would keep every existing
+`PairQueue<C>` spelling working.
+
+Bit 1 cannot come back.  Staging *is* `mathic::PairQueue`'s architecture --
+lazy per-column expansion is the design -- so turning it off means a second
+implementation, not a parameter, and it is the half its author deliberately
+replaced.  The ceiling is therefore two codes rather than four, and the
+option returns renumbered whatever happens.
+
+### Measure first, and the measurement needs no release
+
+Item 10 exists because this codebase carried performance claims nobody had
+checked this decade.  Restoring a queue knob without knowing whether `Heap`
+ever beats `TourTree` would add another one, with the help text asserting a
+tradeoff that may not exist.
+
+The measurement needs no mathicgb change and no released mathic: build
+against a locally patched mathic with that typedef flipped, and run the
+harness item 10 left behind -- `bench.py` and `BENCH-RUNBOOK.md`.  If `Heap`
+wins on some class of input, that is the reason to make the mathic change and
+reintroduce the option honestly.  If it does not, the question is settled for
+good and the option can simply go.
+
+### Until then
+
+`-spairQueue` is left exactly as it is: accepted, advertised and inert.
+Removing it now would churn against a possible return and would turn
+`mgb gb -spairQueue 0` into a parse error for no gain, and item 23 already
+records what depending on an unreleased mathic costs.
 
 ## Considered and declined
 
