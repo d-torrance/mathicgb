@@ -54,7 +54,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 17 | `SparseMatrix::read` truncates the file's modulus to 16 bits | **DONE** — PR #83 |
 | 18 | where input validation belongs, and asserts that outrank their throws | **DONE** — PR #85, all three parts |
 | 19 | `mgb gb` advertises `-monomialTable`, which only `sig` reads | **DONE** — PR #86 |
-| 20 | `total compute time` reports CPU time as if it were elapsed | open |
+| 20 | `total compute time` reports CPU time as if it were elapsed | **DONE** — PR #87 |
 | 21 | the default thread count uses every core, but nothing scales past four | open |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
@@ -1191,7 +1191,9 @@ never worked under `gb`, not for a day.
 
 Also found: `SigPolyBasis` takes the value and ignores it, which is item 26.
 
-## [OPEN] 20. `total compute time` reports CPU time as if it were elapsed
+## [DONE] 20. `total compute time` reports CPU time as if it were elapsed
+
+PR #87, commit c291c27.
 
 Found 2026-08-31 while measuring item 10, and probably the reason item 10 was
 filed in the first place.
@@ -1223,13 +1225,49 @@ do, since it prints a time without being asked -- measures a large regression
 that does not exist.  That is very likely how PR #65's 50% TBB regression came
 to be recorded; no such regression reproduces under `time` on either machine.
 
-The fix is small and the only real question is which way to take it: relabel
-to "total CPU time", or print both, which is the more useful answer since the
-gap between them *is* the parallel overhead.  Printing both would have made
-item 21 obvious years ago.
+Both are printed, and both are named.  `SignatureGB.cpp:294` had the same
+defect and got the same treatment in the same pass, and the statistics block in
+each algorithm relabels `Time spent:` to `CPU time spent:`.
 
-`mathic::Timer` is used the same way in `SignatureGB.cpp:294`, which wants
-checking in the same pass.
+The wall clock is `mtbb::tick_count` -- the one `LogDomain` already uses, TBB's
+clock with a `std::chrono::steady_clock` fallback, so it needs no new
+dependency and works with TBB off.  The elapsed figure is rounded to whole
+milliseconds so that it prints at `mathic::Timer`'s granularity rather than as
+a raw double beside it.
+
+Verified against `/usr/bin/time` on `yang1` with `-reducer 26`:
+
+| threads | mgb CPU | `user + sys` | mgb elapsed | wall |
+|---|---|---|---|---|
+| 1 | 264.416 | 264.45 | 264.512 | 264.55 |
+| 12 | 681.794 | 681.89 | 591.234 | 591.33 |
+
+Each figure matches its reference to within a tenth of a second.
+
+`SignatureGB`'s line also lost a stray `--` between the value and its unit,
+which read `0 -- seconds`.  Nothing else in either algorithm's output used that
+separator.
+
+`MESClassicGBAlg.cpp:426` has the same line and was left alone, because that
+file is in neither build system -- see item 22.
+
+### Found along the way: `mgb sig` reports its queue as `todo`
+
+`SigSPairQueue.cpp:106` is
+
+```cpp
+virtual std::string name() const {return "todo";}
+```
+
+so `mgb sig` prints ` S-pair queue type: todo` in its statistics, where the
+classic algorithm prints `PairQueue-t-tree (si)`.  A placeholder that was
+never filled in, visible to every user of the signature algorithm.  Same
+family as item 8's wrong strings, but in the statistics rather than the help
+text, and found too late to go in that PR.
+
+One line, and the honest value is whatever `mQueue->name()` would report --
+`ConcreteSigSPairQueue` wraps a `mathic::PairQueue` just as `SPairs` does, so
+it can answer the same way.
 
 ## [OPEN] 21. The default thread count uses every core, but nothing scales past four
 
@@ -1256,7 +1294,40 @@ Two fixes, not exclusive:
   larger job.
 
 The cap is worth doing first and on its own.  Neither is an argument for
-reverting PR #65: TBB still wins on wall time everywhere measured.
+reverting PR #65: TBB still wins on wall time everywhere measured -- with the
+caveat below.
+
+### A third machine, where more threads cost wall time outright
+
+Measured 2026-09-18 as a side effect of verifying item 20, on an AMD Ryzen 5
+2600 -- six physical cores, twelve threads -- with GCC 13.3, on `yang1` with
+`-reducer 26`:
+
+| threads | wall | CPU |
+|---|---|---|
+| 1 | 264.55 s | 264.45 s |
+| 12 | 591.33 s | 681.89 s |
+
+Twelve threads took **2.2x the wall time of one**.  That is not the shape this
+section records: the tables above have wall time improving to a 1.75x peak and
+then degrading, never falling below the single-threaded time.
+
+Three reasons to repeat this before believing it, in order of how much they
+could explain:
+
+- `-threadCount 12` is twice the physical core count on this machine, so half
+  the threads are SMT siblings.  The sweeps above stopped at or near the
+  physical count.
+- `lscpu` reports `CPU(s) scaling MHz: 68%`, so an all-core run is very likely
+  clock-limited in a way a single-threaded run is not.  None of the earlier
+  measurements noted governor or boost behaviour.
+- It is one unrepeated pair of runs, where the tables above are sweeps.
+
+`BENCH-RUNBOOK.md` exists for exactly this -- a sweep on this machine, at 1, 2,
+4 and 6 threads rather than 1 and 12, would settle whether the ceiling is
+simply lower here or whether oversubscription and clock throttling account for
+all of it.  Until then this is a lead, not a result, and the "TBB still wins on
+wall time" sentence above should be read as "everywhere measured *so far*".
 
 ## [OPEN] 22. Dead store in `setSPairGroupSize`, in two files
 
@@ -1282,6 +1353,27 @@ collapse to a comment saying the constructor already handled it.  The second is
 more honest about what the code does.  Low priority -- there is no user-visible
 symptom -- but it is a trap for anyone changing how the default is chosen,
 which item 21 might well involve.
+
+### The second file is not built at all
+
+Noted 2026-09-18 while doing item 20.  `MESClassicGBAlg.cpp` appears in
+neither `Makefile.am` nor `src/CMakeLists.txt`, so it compiles nowhere.  It is
+a stale copy of `ClassicGBAlg.cpp` that has been carried along and has drifted:
+
+| | `ClassicGBAlg.cpp` | `MESClassicGBAlg.cpp` |
+|---|---|---|
+| the dead store | `:150` | `:137` |
+| `total compute time` mislabelled | `:444`, fixed by item 20 | `:426`, left alone |
+
+So "in two files" overstates it -- one of the two ships and one does not.
+Item 20 deliberately did not touch its copy of the timing line, since a fix
+there compiles nowhere and only widens the drift.
+
+That makes the real question about this file prior to the dead store: whether
+it should exist.  Deleting it would close this item, remove item 26's
+`queueType` from a third site, and stop future greps turning up two answers to
+every question.  Keeping it means it should at least be built.  Either way the
+dead store is the smaller half of the decision.
 
 ## [OPEN] 23. A UBSan job
 
