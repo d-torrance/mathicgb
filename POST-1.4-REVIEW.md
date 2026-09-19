@@ -57,7 +57,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 20 | `total compute time` reports CPU time as if it were elapsed | **DONE** — PR #87 |
 | 21 | the default thread count uses every core, but nothing scales past four | open — blocked on a 192-core sweep, see below |
 | 22 | dead store in `setSPairGroupSize`, in two files | **DONE** — PR #88, and the second file is gone |
-| 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
+| 23 | a UBSan job, and the 325 misaligned-access reports behind it | **DONE** — PR #89 |
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
@@ -1443,7 +1443,9 @@ it stops every grep for a bug in `ClassicGBAlg.cpp` returning two answers, one
 of which compiles nowhere -- which is how this item came to be written as "in
 two files".
 
-## [OPEN] 23. A UBSan job
+## [DONE] 23. A UBSan job
+
+PR #89, commit 35112b1.
 
 Split out of section 14, which called it the natural companion to the matrix:
 four of the five commits before this review were UBSan findings, all found by
@@ -1488,25 +1490,62 @@ architectures `configure.ac` already names in its `-latomic` check.
 **This is fixed in mathic's git already, but not in the Ubuntu package CI
 installs**, so the job cannot gate alignment yet.
 
-What to add now: ubuntu, cmake Debug,
+What was added: ubuntu, **autotools** rather than cmake, `--enable-debug`,
+and `make check` under
 
 ```
 -fsanitize=undefined -fno-sanitize=alignment -fno-sanitize-recover=all
 -fno-omit-frame-pointer -g
 ```
 
-with `UBSAN_OPTIONS=print_stacktrace=1`.  `-fno-sanitize-recover=all` is what
-makes the job fail rather than print and pass.  Verified against the packaged
-mathic: 246/246, zero reports, exit 0, in 48 s against 28 s for the same suite
-without the sanitizer.  So it lands green and gates every other class of
-undefined behaviour from day one.
+with `UBSAN_OPTIONS=print_stacktrace=1` and `VERBOSE=1`, the latter because
+automake prints only a summary on failure and the diagnostics are in the test
+log.  `-fno-sanitize-recover=all` is what makes the job fail rather than print
+and pass.
+
+This section proposed cmake.  Autotools was preferred and turns out to be no
+harder: `--enable-debug` contributes only `-DMATHICGB_DEBUG`, so passing
+`CXXFLAGS` is clean, and `make check` drives the harness so the libtool
+wrapper never has to be run directly.
+
+Verified locally against the same environment the job runs in -- Ubuntu 24.04,
+GCC 13.3, `libmathic-dev` and `libmemtailor-dev` 1.0~git20230916-1 -- and then
+in CI:
+
+| | |
+|---|---|
+| with the job's flags | 253/253, zero reports, exit 0, 49.8 s |
+| same flags, alignment re-enabled | 325 reports, 113 sites |
+| in Actions | **pass, 2m07s**, 18/18 checks green |
+
+The middle row is the one that matters: it reproduces this section's
+2026-09-01 measurement exactly, breakdown included, which is how we know the
+job is green because the exclusion works rather than because the sanitizer is
+inert.  The CI log confirms the flags reach every translation unit and that
+`# TOTAL: 1  # PASS: 1  # FAIL: 0` came from a real run.
+
+### The exclusion will outlast this release
 
 The one real cost is that `-fno-sanitize=alignment` is blunt: it silences new
 alignment UB in our own code as well as the inherited kind.  Targeted runtime
-suppressions would scope it to mathic's headers, but they would not help while
-our own 94 sites share the root cause and would still fire.  The trigger for
-dropping the exclusion is the packaged mathic catching up; our own sites should
-be re-checked then, since they may well go with it.
+suppressions would not help, since our own 94 sites fire on mathic's
+allocation rather than on anything of ours.
+
+This section said the trigger for dropping it is "the packaged mathic catching
+up".  That is a longer wait than it sounds, established 2026-09-19:
+
+- the fix is mathic `0dc00cc`, *Align KDEntryArray's entry storage*, 2026-08-29
+- it is in **no mathic release**: v1.5 was tagged three days earlier
+- Ubuntu noble (24.04 LTS) has `1.0~git20230916-1`, resolute (26.04 LTS) has
+  `1.2-1`, stonking (26.10) has `1.5-1` -- the fix is in none of them
+- an Ubuntu LTS never gets a newer package, so `ubuntu-latest` will not acquire
+  it by waiting; the exclusion lifts only when the runner image moves to an LTS
+  whose mathic contains the fix, which is **28.04 at the earliest**
+
+Building mathic from git in the job would lift it immediately, and was
+declined: CI should test against what users install.  So the exclusion stays,
+and our own sites want re-checking whenever it does go -- they share the cause
+and should go with it.
 
 ## [DONE] 24. 19 clang warnings in mathicgb.cpp, and an assert that outranks its throw
 
