@@ -1552,8 +1552,7 @@ and should go with it.
 Fixed by ecd68c4, in PR #85 as part of item 18.  Not by the respelling
 proposed below, but by deleting the assert altogether, which removes the
 comma-operator idiom the warning is about.  clang 18.1.3 reports 19
-warnings in this file before and 0 after.  The two loose ends recorded at
-the end of this section are untouched.
+warnings in this file before and 0 after.
 
 Found 2026-09-02 in PR #81's CI, in the macOS debug cells -- which is the
 point: nothing built macOS with assertions before PR #80 added them, so these
@@ -1591,17 +1590,6 @@ declared, never used, and looks like an earlier attempt at this same problem.
 Underneath the warning, the same macro also asserts before it throws, at 20
 sites in the public streaming interface.  That is item 18's subject, not this
 one's: fixing the warning does not change the abort, and the two are separable.
-
-### Also in those logs, and not worth items of their own
-
-- `ld: warning: -single_module is obsolete` and `ld: warning: -bind_at_load is
-  deprecated on macOS`, in every macOS autotools cell.  Both flags come from
-  libtool, not from us.
-- `Makefile.am:64: warning: wildcard \ $(top_srcdir: non-POSIX variable name`,
-  from automake on every autotools cell including ubuntu.  That is the
-  `$(wildcard ...)` in `mathicgbB_include_HEADERS`, which installs the headers
-  by glob rather than by list.  It predates this review and is the only
-  automake warning in the build.
 
 ## [OPEN] 25. The `Pimpl` pointers are raw, and two constructors get it wrong
 
