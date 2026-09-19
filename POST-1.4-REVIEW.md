@@ -61,7 +61,8 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
-| 27 | the S-pair queue choice is dead, and only mathic can bring it back | open — **last deliberately**, the one item needing a mathic change |
+| 27 | the S-pair queue choice is dead, and only mathic can bring it back | open — **do last**, the one item needing a mathic change |
+| 28 | `mgb sig` reports its S-pair queue type as `todo` | open |
 
 ---
 
@@ -1251,23 +1252,8 @@ separator.
 `MESClassicGBAlg.cpp:426` has the same line and was left alone, because that
 file is in neither build system -- see item 22.
 
-### Found along the way: `mgb sig` reports its queue as `todo`
-
-`SigSPairQueue.cpp:106` is
-
-```cpp
-virtual std::string name() const {return "todo";}
-```
-
-so `mgb sig` prints ` S-pair queue type: todo` in its statistics, where the
-classic algorithm prints `PairQueue-t-tree (si)`.  A placeholder that was
-never filled in, visible to every user of the signature algorithm.  Same
-family as item 8's wrong strings, but in the statistics rather than the help
-text, and found too late to go in that PR.
-
-One line, and the honest value is whatever `mQueue->name()` would report --
-`ConcreteSigSPairQueue` wraps a `mathic::PairQueue` just as `SPairs` does, so
-it can answer the same way.
+Found along the way and split out as item 28: `mgb sig` reports its S-pair
+queue as `todo`.
 
 ## [OPEN] 21. The default thread count uses every core, but nothing scales past four
 
@@ -1370,7 +1356,7 @@ Item 20 deliberately did not touch its copy of the timing line, since a fix
 there compiles nowhere and only widens the drift.
 
 That makes the real question about this file prior to the dead store: whether
-it should exist.  Deleting it would close this item, remove item 26's
+it should exist.  Deleting it would close this item, remove item 27's
 `queueType` from a third site, and stop future greps turning up two answers to
 every question.  Keeping it means it should at least be built.  Either way the
 dead store is the smaller half of the decision.
@@ -1682,6 +1668,37 @@ good and the option can simply go.
 Removing it now would churn against a possible return and would turn
 `mgb gb -spairQueue 0` into a parse error for no gain, and item 23 already
 records what depending on an unreleased mathic costs.
+
+## [OPEN] 28. `mgb sig` reports its S-pair queue type as `todo`
+
+Found 2026-09-18 while comparing `mgb sig`'s statistics before and after
+item 20.
+
+`SigSPairQueue.cpp:106` is
+
+```cpp
+virtual std::string name() const {return "todo";}
+```
+
+so `mgb sig` prints
+
+```
+ S-pair queue type: todo
+```
+
+where the classic algorithm prints `PairQueue-t-tree (si)`.  A placeholder
+that was never filled in, visible to every user of the signature algorithm.
+Same family as item 8's wrong strings, but in the statistics rather than the
+help text, and found too late to go in that PR.
+
+One line.  `ConcreteSigSPairQueue` wraps a `mathic::PairQueue` exactly as
+`SPairs` does, and `SPairs::name()` simply returns `mQueue.name()`, so the
+honest value is available the same way.
+
+Numbered after item 27 although it should be done long before it: from here on
+new items are appended rather than inserted, so item 27 keeps the number it
+has.  Reading order is not priority order past item 25 -- the table's notes
+carry that.
 
 ## Considered and declined
 
