@@ -55,7 +55,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 18 | where input validation belongs, and asserts that outrank their throws | **DONE** — PR #85, all three parts |
 | 19 | `mgb gb` advertises `-monomialTable`, which only `sig` reads | **DONE** — PR #86 |
 | 20 | `total compute time` reports CPU time as if it were elapsed | **DONE** — PR #87 |
-| 21 | the default thread count uses every core, but nothing scales past four | open |
+| 21 | the default thread count uses every core, but nothing scales past four | open — blocked on a 192-core sweep, see below |
 | 22 | dead store in `setSPairGroupSize`, in two files | open |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
@@ -1314,6 +1314,74 @@ could explain:
 simply lower here or whether oversubscription and clock throttling account for
 all of it.  Until then this is a lead, not a result, and the "TBB still wins on
 wall time" sentence above should be read as "everywhere measured *so far*".
+
+### Why the cap is blocked, and on what
+
+Reviewed 2026-09-18.  This section previously proposed capping the default at
+four and called it the cheap fix worth doing first.  The one-line change is
+cheap; the number is not supported.  Four problems with it:
+
+- **The measurement behind "four" is a sub-second run.**  The 1.75x peak is
+  `hyclic8-101-trimmed` on the M5 Pro, whose fastest cell is 0.44 s.
+- **The two inputs disagree.**  `hyclic8` peaks at four threads, `yang1` at
+  **two**, and `yang1` is the longer and more trustworthy of the pair.  Four
+  is already a split between the only two inputs measured.
+- **Every machine measured is small** -- 2 physical cores, 6 P-cores, 6 cores.
+  No machine with 32 or more has been tested, which is both where the current
+  default does the most harm and where a hardcoded four would idle the most
+  hardware.  "The ceiling is algorithmic, not hardware" is extrapolated from
+  three small machines.
+- **The three machines disagree about the shape past the peak**, per the
+  subsection above.
+
+### The sweep that would settle it, and what it is waiting on
+
+Georgia Tech's PACE Phoenix cluster has `cpu-gnr` nodes with 192 CPUs (Intel
+Granite Rapids, 54 nodes) and `cpu-amd` nodes with 128 (4 nodes).  That is an
+order of magnitude past anything in the tables above, and running both tests
+the central claim directly: if Intel-192 and AMD-128 flatten at the same small
+thread count, the ceiling is algorithmic after all.  If they do not, it never
+was.
+
+`yang1` is the input to use.  It is the only one in a usable range -- 43.76 s
+on the M5 Pro, 264.5 s on the Ryzen -- where `hyclic8` is 0.77 s and
+`hyclic9-101-trimmed` exceeds 600 s at one thread.
+
+The release build is fine for this.  `reduceToEchelonForm` and
+`F4MatrixBuilder` have **no change to the parallel structure between `v1.4` and
+master** -- not one line touching `parallel_for`, the mutex, the `while` loop
+or `task_arena`; the only difference in those files is a trailing space from
+the whitespace-normalisation commit.  So v1.4 measures the same scaling
+behaviour, and no source build is needed.
+
+**What blocks it: spack's `mathicgb` has no TBB.**  The package declares
+`mathic` and `memtailor` and passes only `--enable-shared`, so TBB is never in
+the build environment, `configure` falls through `--with-tbb=detect` to its
+`AC_MSG_WARN` path, and the result is built with `-DMATHICGB_NO_TBB`.
+Single-threaded, no error, one warning in a build log.  `ldd` on the installed
+`mgb` shows no `libtbb`.
+
+Every spack-installed mathicgb since v1.1 is affected, and spack's Macaulay2
+depends on `mathicgb` *and* on `tbb` separately -- so it has had TBB available
+to itself while linking a single-threaded mathicgb.
+
+spack/spack-packages#6536 adds a `tbb` variant defaulting to on, and passes
+`--with-tbb` explicitly rather than leaving detection to fall through.  Once
+that lands the sweep can run against a stock module.
+
+### The footgun underneath the packaging bug
+
+Worth recording separately from the packaging fix: this was possible because
+mathicgb's own `configure` treats multithreading as optional and silent.
+`--with-tbb=detect` is the default, and when detection fails it warns and
+continues rather than failing.  That is how a competent packager -- who is also
+the upstream maintainer -- shipped a single-threaded build for four releases
+without noticing.
+
+Whether `detect` should remain the default, or a missing TBB should be an error
+unless `--without-tbb` is explicit, is its own question.  Same family as the
+review's other findings where the build quietly does something other than what
+was asked.
 
 ## [OPEN] 22. Dead store in `setSPairGroupSize`, in two files
 
