@@ -61,7 +61,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
-| 27 | the S-pair queue choice is dead, and only mathic can bring it back | open — **do last**, the one item needing a mathic change |
+| 27 | the S-pair queue choice is dead, and restoring it is not worth it | open — **do last**; expected to end in deleting the option |
 | 28 | `mgb sig` reports its S-pair queue type as `todo` | open |
 
 ---
@@ -1784,12 +1784,41 @@ wins on some class of input, that is the reason to make the mathic change and
 reintroduce the option honestly.  If it does not, the question is settled for
 good and the option can simply go.
 
+### Restoring it is not worth it, decided 2026-09-19
+
+The section above priced this as "a small mathic change, then reintroduce the
+option".  That undercounts by a long way, and item 23's packaging work is what
+exposed it.
+
+**mathicgb must keep building against older mathic.**  Doug, 2026-09-19: "I
+want mathicgb to be able to use older versions of mathic."  So a new mathic API
+can never simply be required, and using one costs feature detection plus a
+fallback path -- two code paths, maintained indefinitely, for an option that
+has done nothing since 2013.
+
+**There is no machinery for that today.**  `configure.ac` does a bare
+`PKG_CHECK_MODULES([MATHIC], [mathic])` with no version constraint, mathic's
+headers expose no version macro, and the installed `mathic.pc` reports
+`Version: 1.0` whatever the release.  Conditional use of a new API would have
+to be built from scratch.
+
+**And the feature would be unreachable for years anyway.**  Item 23 measured
+the lag: the alignment fix `0dc00cc` landed three days after v1.5 was tagged
+and is in no release at all, Ubuntu noble carries a 2023 snapshot, resolute
+carries 1.2 and stonking carries 1.5.  A `-spairQueue` that works only against
+mathic built from git serves almost nobody.
+
+So the expected end of this item is **deleting the option**, not restoring it.
+That also demotes the measurement above from a decision input to curiosity: a
+result showing `Heap` sometimes wins would still not be shippable, so it cannot
+change the answer.
+
 ### Until then
 
-`-spairQueue` is left exactly as it is: accepted, advertised and inert.
-Removing it now would churn against a possible return and would turn
-`mgb gb -spairQueue 0` into a parse error for no gain, and item 23 already
-records what depending on an unreleased mathic costs.
+`-spairQueue` is left exactly as it is: accepted, advertised and inert.  It
+stays only because deleting it is a user-visible break that has waited twelve
+years and can wait until this item is actually worked, not because a return is
+expected.
 
 ## [OPEN] 28. `mgb sig` reports its S-pair queue type as `todo`
 
