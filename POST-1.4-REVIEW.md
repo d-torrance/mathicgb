@@ -56,7 +56,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 19 | `mgb gb` advertises `-monomialTable`, which only `sig` reads | **DONE** — PR #86 |
 | 20 | `total compute time` reports CPU time as if it were elapsed | **DONE** — PR #87 |
 | 21 | the default thread count uses every core, but nothing scales past four | open — blocked on a 192-core sweep, see below |
-| 22 | dead store in `setSPairGroupSize`, in two files | open |
+| 22 | dead store in `setSPairGroupSize`, in two files | **DONE** — PR #88, and the second file is gone |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | open |
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
@@ -1207,7 +1207,8 @@ and `mathic::Timer` is a wrapper around `std::clock()`.  mathic's own header
 says so plainly -- *"Measures spans of CPU time"* -- so the number is process
 CPU time, the sum over all threads, not elapsed time.  The label says
 otherwise, and so does "Time spent" a few lines down at `:460`.
-`MESClassicGBAlg.cpp:426` has the same line.
+`MESClassicGBAlg.cpp:426` had the same line; that file has since been deleted
+in PR #88, see item 22.
 
 Single-threaded this is invisible, because the two agree.  Multithreaded it
 inverts the result.  From the `yang1` sweep in item 10, on an 18-thread
@@ -1249,8 +1250,9 @@ Each figure matches its reference to within a tenth of a second.
 which read `0 -- seconds`.  Nothing else in either algorithm's output used that
 separator.
 
-`MESClassicGBAlg.cpp:426` has the same line and was left alone, because that
-file is in neither build system -- see item 22.
+`MESClassicGBAlg.cpp:426` had the same line and was left alone at the time,
+because that file was in neither build system.  It has since been deleted
+outright in PR #88, so the second copy is gone rather than lagging -- item 22.
 
 Found along the way and split out as item 28: `mgb sig` reports its S-pair
 queue as `todo`.
@@ -1399,8 +1401,8 @@ Found 2026-08-31 while chasing item 10's `yang1` baseline.
 
 Behaviour is correct only because the constructor at `:127` already initializes
 the member to the same value, so the branch that looks like it computes the
-default is the branch that does nothing.  `MESClassicGBAlg.cpp:137` is
-identical.
+default is the branch that does nothing.  `MESClassicGBAlg.cpp:137` was
+identical, until that file was deleted -- below.
 
 Either the assignment should go to `mSPairGroupSize`, or the branch should
 collapse to a comment saying the constructor already handled it.  The second is
@@ -1408,26 +1410,38 @@ more honest about what the code does.  Low priority -- there is no user-visible
 symptom -- but it is a trap for anyone changing how the default is chosen,
 which item 21 might well involve.
 
-### The second file is not built at all
+### The second file was never part of this project, and is deleted
 
-Noted 2026-09-18 while doing item 20.  `MESClassicGBAlg.cpp` appears in
-neither `Makefile.am` nor `src/CMakeLists.txt`, so it compiles nowhere.  It is
-a stale copy of `ClassicGBAlg.cpp` that has been carried along and has drifted:
+"In two files" overstated it: one of the two shipped and one did not.
+`MESClassicGBAlg.cpp` and its header were in neither `Makefile.am` nor
+`src/CMakeLists.txt`, not even `EXTRA_DIST`, so no release tarball ever
+contained them, and nothing in the tree referred to them.
 
-| | `ClassicGBAlg.cpp` | `MESClassicGBAlg.cpp` |
-|---|---|---|
-| the dead store | `:150` | `:137` |
-| `total compute time` mislabelled | `:444`, fixed by item 20 | `:426`, left alone |
+They could not have been built.  The `.cpp` includes `ClassicGBAlg.hpp` rather
+than its own header and defines `mgb::ClassicGBAlg`, the class
+`ClassicGBAlg.cpp` already defines, so adding it to a build is a duplicate
+symbol.  Its own header declares something else again, `mgbF4`, which the
+`.cpp` never includes.
 
-So "in two files" overstates it -- one of the two ships and one does not.
-Item 20 deliberately did not touch its copy of the timing line, since a fix
-there compiles nowhere and only widens the drift.
+Nor was there anything in it to keep.  The algorithm is identical --
+`computeGrobnerBasis` matches outright, and `step` and `insertReducedPoly`
+differ only in spelling `MATHICGB_ASSERT` as plain `assert`.  Everything else
+is a removal: the statistics block built from 51 `ColumnPrinter` calls is gone,
+`printMemoryUse` is an empty body reading `// TODO: bring over from mathicgb or
+rewrite`, and `LogDomain` is dropped.  226 fewer lines, all subtractions.
 
-That makes the real question about this file prior to the dead store: whether
-it should exist.  Deleting it would close this item, remove item 27's
-`queueType` from a third site, and stop future greps turning up two answers to
-every question.  Keeping it means it should at least be built.  Either way the
-dead store is the smaller half of the decision.
+It was a port in progress.  The file strips this project's own macros so that
+it compiles inside Macaulay2's engine, which its `compile-command` names as
+`$M2BUILDDIR/Macaulay2/e`.  It arrived here in `e6996a3`, a bulk backport of 14
+files from Macaulay2/M2#2160, and had no substantive change in the five years
+since.  Macaulay2 does not have it today either -- the name appears nowhere in
+that repository.
+
+Deleted in PR #88.  That also removed the second copy of the timing line item
+20 fixed, and a third site of the `queueType` parameter item 27 covers.  Mostly
+it stops every grep for a bug in `ClassicGBAlg.cpp` returning two answers, one
+of which compiles nowhere -- which is how this item came to be written as "in
+two files".
 
 ## [OPEN] 23. A UBSan job
 
@@ -1595,8 +1609,9 @@ cleanup, and then swallows the exception:
 
 No rethrow, so the constructor completes with `mPimpl` dangling and the
 destructor deletes it a second time.  Every other `catch (...)` in the sources
-cleans up and rethrows -- `ClassicGBAlg.cpp:308`, `MESClassicGBAlg.cpp:290`,
-`GBMain.cpp:44` -- so this is an omission rather than a choice.
+cleans up and rethrows -- `ClassicGBAlg.cpp:308` and `GBMain.cpp:44` -- so this
+is an omission rather than a choice.  A third, in `MESClassicGBAlg.cpp`, went
+with that file in PR #88.
 
 It is unreachable through the public interface.  The checker takes its modulus
 from `conf.modulus()` (`src/mathicgb.cpp:620`), and `GroebnerConfiguration` has
