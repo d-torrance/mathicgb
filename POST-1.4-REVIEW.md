@@ -61,7 +61,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
-| 27 | the S-pair queue choice is dead, and restoring it is not worth it | open — delete the option; do with 26 and 28 |
+| 27 | the S-pair queue choice is dead, and restoring it is not worth it | open — delete the option |
 | 28 | `mgb sig` reports its S-pair queue type as `todo` | open |
 
 ---
@@ -1687,8 +1687,8 @@ worth one decision rather than three:
 All three can go now.  `monTableType` was always free to, since nothing would
 ever bring it back -- `-monomialTable` reaches `Hsyz` directly without it.  The
 `queueType` parameters were waiting on item 27 in case restoring `-spairQueue`
-wanted them back; that is no longer expected, so they go when the option does.
-The two items are one cleanup and are worth doing together.
+wanted them back; that is no longer expected, so they go with the option, under
+that item.  This item is `monTableType` alone.
 
 ## [OPEN] 27. The S-pair queue choice is dead, and only mathic can bring it back
 
@@ -1697,11 +1697,13 @@ merely unvalidated.
 
 It was placed last while restoring the option was still on the table, since
 that was the one thing here needing a change to mathic.  That is settled
-below: the option gets deleted, which needs no mathic change at all.  So this
-is no longer last, and belongs with items 26 and 28 -- three small removals of
-dead code and one dead string.  Deleting `-spairQueue` also takes out two of
-the three entries in item 26's table, since the `queueType` parameters exist
-only to carry it.
+below: the option gets deleted, which needs no mathic change at all, so it is
+no longer last and can be taken in turn like anything else.
+
+Deleting `-spairQueue` also takes out two of the three entries in item 26's
+dead-parameter table, since the `queueType` parameters exist only to carry it.
+That is a note about what this item covers, not a reason to do the two
+together -- they touch different files and neither waits on the other.
 
 ### It does nothing at all
 
