@@ -63,9 +63,21 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | **DONE** — PR #91 |
 | 27 | the S-pair queue choice is dead, and restoring it is not worth it | **DONE** — PR #92, the option is deleted |
 | 28 | `mgb sig` reports its S-pair queue type as `todo` | **DONE** — PR #93 |
-| 29 | `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct | open -- low priority, reachable only through allocation failure |
-| 30 | `SigSPairs` takes a reducer it has not stored since 2021 | open |
-| 31 | `basisParseFromString` leaks the ring of every basis it parses | open -- test helper only |
+| 29 | `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct | **DONE** — PR #94, by moving the array into the `Pimpl` |
+| 30 | `SigSPairs` takes a reducer it has not stored since 2021 | **DONE** — PR #95 |
+| 31 | `basisParseFromString` leaks the ring of every basis it parses | PR #96, open |
+| 32 | the F4 matrix code: a Debug assert on the default path, a bad comparator, a leak, a race | open -- **first**; needs investigation before a fix |
+| 33 | input that crashes or is half-validated: zero generators in `sig`, orders, exponents | open -- **first**, with 32 |
+| 34 | a structurally corrupt matrix file segfaults `mgb matrix` | open |
+| 35 | `-threadCount`: unvalidated, segfaults above 65536, ignored by `matrix` and `sig` | open |
+| 36 | statistics that are wrong: `S-pairs reduced` is always 0, and friends | open |
+| 37 | CLI help, option semantics and the man page, second pass | open |
+| 38 | dead parameters and stale comments, second pass | open |
+| 39 | build and packaging, second pass: `configure` under dash, top-level `ctest`, the tarball | open |
+
+Items 32 to 39 come from the second review pass of 2026-09-25, and each is
+meant to be one PR with a commit per finding -- the first round's PRs were
+narrower than they needed to be.  Their numbers are in priority order.
 
 ---
 
@@ -1193,6 +1205,11 @@ sorted the options into `GBCommonParams` for the shared ones -- putting this
 one there although `SigGBAction` already had its own parameter list.  It has
 never worked under `gb`, not for a day.
 
+Macaulay2's undistributed `MGBInterface.m2:258` passes `-monomialTable` to
+`mgb gb` when a caller sets `"MonomialTable"`, which is now an unknown-option
+error.  Same file and same opt-in shape as the `-spairQueue` case in item 27,
+which was judged not a concern; recorded 2026-09-25 so it is not rediscovered.
+
 Also found: `SigPolyBasis` takes the value and ignores it, which is item 26.
 
 ## [DONE] 20. `total compute time` reports CPU time as if it were elapsed
@@ -1903,7 +1920,16 @@ new items are appended rather than inserted, so item 27 keeps the number it
 has.  Reading order is not priority order past item 25 -- the table's notes
 carry that.
 
-## [OPEN] 29. `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct
+## [DONE] 29. `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct
+
+PR #94, commit 33fd969.  Not the helper proposed at the end of this section:
+the `Pimpl` now owns the array as a `unique_ptr<Exponent[]>`, and `mExponents`
+points into it.  The public constructor builds the `Pimpl` first and delegates
+to a new private constructor that cannot fail, so there is one allocation and
+nothing to clean up.  `mExponents` stays a raw pointer at the same offset, so
+the inline `appendExponent` and the layout are unchanged; the header gains only
+the private constructor.  Checked with an `operator new` that fails on the n-th
+allocation: master leaks the array on failures 2 to 10, the branch on none.
 
 Found 2026-09-25 while doing item 25.
 
@@ -1950,7 +1976,11 @@ mem-initializer that does `new Pimpl(conf)` inside a `try`, and on failure
 `delete[]`s the already-built array and rethrows.  Nothing in the header
 changes.
 
-## [OPEN] 30. `SigSPairs` takes a reducer it has not stored since 2021
+## [DONE] 30. `SigSPairs` takes a reducer it has not stored since 2021
+
+PR #95, commit 751a344, as proposed below, plus the `Reducer` forward
+declaration and include that existed only for the parameter.  `mgb sig
+-outputResult` is byte-identical on `cyclic5` and `hilbertkunz1`.
 
 Found 2026-09-25 while doing item 27.
 
@@ -1974,6 +2004,13 @@ commented-out lines.  Left out of item 27's PR because it is not part of the
 S-pair queue option.
 
 ## [OPEN] 31. `basisParseFromString` leaks the ring of every basis it parses
+
+PR #96, commit 3127be6, open.  The helper is now `ringAndBasisFromString`,
+returning both as a `pair` of `unique_ptr`s that callers take with a
+structured binding, so the ring outlives the basis; `Poly.lead` drops its
+workaround.  Renamed rather than retyped, because a changed return type alone
+would keep the exported symbol and let an old binary link and misread it.  The
+second pass confirmed the suite then runs with no ASan leak report at all.
 
 Found 2026-09-25 running the whole suite under ASan while doing item 29.
 
@@ -2010,6 +2047,530 @@ ASan report from ever being clean: a new leak has to be found by diffing
 against master's report rather than seen outright, which is how item 29's
 check had to be done.  The shape of the fix -- return the ring alongside the basis, or hand ownership to the
 caller the way `Poly.lead` already assumes -- is the decision.
+
+---
+
+# Second pass, 2026-09-25
+
+A fresh review of the whole tree once items 1 to 31 were done or in review,
+against upstream master at 751a344 plus PR #96.  Four parts, run in parallel:
+the `v1.4..HEAD` diff commit by commit; a sweep of `src/` for further instances
+of the patterns items 1 to 31 found; the build, packaging, docs and CI; and a
+dynamic pass under ASan, UBSan, TSan and extra warnings.
+
+**What held up.**
+- The diff review found no correctness bug in anything since v1.4.
+  - 33fd969's delegating constructor and #96's structured binding are both
+    right, and so is `checkModulusIsPrime` for every caller it has.
+  - Every removal is complete: no `spairQueue`, `queueType`, `monTableType`,
+    `MESClassic`, `Atomic.hpp`, `OMPIndex` or `MATHICGB_RESTRICT` left
+    anywhere, docs and build files included.
+- `make distcheck` passes against noble's mathic `1.0~git20230916`.
+- cmake and autotools list exactly the same sources and install the same
+  files.
+- The suite passes 254/254 under autotools, cmake with GCC 13.3 and cmake with
+  clang 18.1.3.
+- Under ASan with #96 the suite has no leak report at all, and UBSan finds
+  only item 23's alignment cause (322 reports, 112 sites).
+- About 35 hostile inputs to `mgb gb` all got a clean error or a correct
+  result.
+
+What did not hold up is below, grouped by the PR each group should become.
+Every finding was reproduced; the few that were not are marked as leads.
+
+Two environment traps, for anyone repeating the dynamic pass on this machine:
+`LD_PRELOAD=libgtk3-nocsd.so.0` must be unset or the ASan test binary fails
+during gtest discovery, and TSan binaries need `setarch -R` on kernel 6.8, or
+they die with "unexpected memory mapping".  TSan against the packaged libtbb
+reports 5929 false positives; against a oneTBB 2021.11 rebuilt with
+`-fsanitize=thread` it reports 9, all real, which is item 32's race.
+
+## [OPEN] 32. The F4 matrix code: a Debug assert on the default path, a bad comparator, a leak, a race
+
+Five findings in `F4MatrixBuilder2`, `SparseMatrix` and `MonomialMap`, the
+code behind `Reducer_F4_New`, which is what `mathicgb.cpp:929` selects by
+default and so what Macaulay2 runs.  The first and last need investigating
+before there is a fix to write; the middle three are small.
+
+### A Debug build fails an assert on the default F4 path
+
+```
+$ mgb gb cyclic7 -reducer 26 -threadCount 1        # Debug
+mgb: F4MatrixBuilder2.cpp:133: initializeRowsToReduce: Assertion `false' failed.
+```
+
+Single-threaded, so not a race.  Release completes, and its lead terms match
+the classic reducer's exactly; `-reducer 25` passes in Debug.  By the comment
+at `F4MatrixBuilder2.cpp:60-72` the assert says that S-pair elimination no
+longer delivers the guarantee that S-pairs with the same lcm share a or b.
+The code is written to cope when that fails, so this looks like a violated
+invariant or a lost optimisation rather than wrong output -- but nothing has
+shown which, and it is the path every Debug build of Macaulay2 takes.  No CI
+cell catches it because the suite never runs `-reducer 26` on an input this
+size in Debug.
+
+### The sort comparator is not a strict weak ordering
+
+`F4MatrixBuilder2.cpp:78-83`:
+
+```cpp
+    auto cmp = [&](const RowTask& a, const RowTask& b) {
+      if (a.sPairPoly == nullptr)
+        return b.sPairPoly != nullptr;
+      else
+        return monoid().lessThan(*a.desiredLead, *b.desiredLead);
+    };
+```
+
+When `a` is an S-pair and `b` is not, it compares leads instead of returning
+`false`, so `cmp(a, b)` and `cmp(b, a)` can both be true.  That is undefined
+behaviour for `mtbb::parallel_sort`, and the comment above it says the
+non-S-pairs go first, which this does not guarantee.  Fixing it in a scratch
+copy did not clear the assert above, so the two are separate.
+
+### `SparseMatrix` leaks its block chain when one row outgrows the quantum
+
+```
+$ mgb gb cyclic5 -reducer 26 -memoryQuantumForReducer 1      # ASan
+```
+
+gives 110 LeakSanitizer reports, for example 41080 bytes in 967 objects, from
+`reserveFreeEntries` via `growEntryCapacity` (`SparseMatrix.cpp:379,385`) and
+`F4MatrixReducer.cpp:305`.  When the row being built is longer than the
+quantum, `growEntryCapacity` takes the branch at `:352-353`
+(`mHasNoRows && mPreviousBlock != 0`), `reserveFreeEntries` then deletes
+`oldBlock`, and `oldBlock->mPreviousBlock` still holds the chain moved into it
+-- `Block` has no destructor to free it.  At the default quantum of 1,048,576
+this needs a row with over about a million entries: rare, but reachable.
+
+### Null pointer passed to `fwrite` for an empty row
+
+`mgb gb cyclic5 -reducer 26 -storeMatrices 1` under UBSan reports "reference
+binding to null pointer" at `SparseMatrix.hpp:299,300` and "null pointer
+passed as argument 1, which is declared to never be null" at
+`SparseMatrix.cpp:479,486`, in `SparseMatrix::write`: `&rowBegin(row).scalar()`
+is taken on an empty row.  Harmless while the count is 0, but undefined
+behaviour, and exactly the class item 23's job exists to catch -- it misses it
+only because the suite never stores an empty row.
+
+### A data race in `MonomialMap` readers
+
+The 9 TSan reports against an instrumented TBB are one pattern, from
+`GB.liu_0_1`, `GB.weispfennig97_0_5` and `GB.gerdt93_0_1`.  A worker in
+`FixedSizeMonomialMap::findProduct`, via `MonomialMap::Reader::findProduct` or
+`findTwoProducts`, reads a node's monomial or its `mNext`
+(`FixedSizeMonomialMap.h:269`) while the main thread writes them in
+`MonomialMap::insert`, from `F4MatrixBuilder::createColumn` under the
+insertion mutex.
+
+Likely mechanism, not yet proven: a `Reader` holds a reference to the map it
+saw when constructed (`MonomialMap.hpp:93`), and on growth the rehashing
+constructor (`FixedSizeMonomialMap.h:90-98`) relinks the same nodes with
+*relaxed* `setNext` stores.  A reader still walking an old chain can follow a
+relaxed link to a node whose release publication at `:225` it never acquired.
+Benign on x86; possibly a stale read on the weak-memory targets Debian builds
+for.  That the rest is sound is suggested by the count: if TSan were not
+treating the consume loads as acquires there would be thousands of reports,
+not 9.
+
+## [OPEN] 33. Input that crashes or is only half-validated
+
+Item 18's subject, second round: user input that Debug aborts on and Release
+either crashes on or silently accepts.  Crashes on valid input first.
+
+### `mgb sig` segfaults on a zero generator
+
+```
+$ cat z.ideal
+101
+4
+1
+ 1 1 1 1
+2
+0
+a-b
+$ mgb sig z            # Release: Segmentation fault, rc 139
+```
+
+A zero generator is valid input, and `mgb gb z` handles it.  ASan: `SEGV in
+Poly::isMonic() Poly.hpp:166 <- makeMonic() Poly.hpp:129 <-
+SignatureGB::SignatureGB SignatureGB.cpp:71`; Debug stops at the
+`!isZero()` assert at `Poly.hpp:128`.  CLI only -- the library never reaches
+`SignatureGB` -- but the one real crash on valid input this pass found.
+
+### A non-monomial order is asserted, not rejected
+
+`MathicIO::readRing` (`MathicIO.hpp:206`) never checks that the order it read
+is a monomial order; `MonoMonoid.hpp:71` asserts it.  With a negative weight
+(`101 2 1 -1 1 1 ab`) or an ungraded revlex (`101 2 0 1 ab`):
+
+- Debug aborts at `MonoMonoid.hpp:71`.
+- Release exits 0 with a "basis" over an order that is not a well-order --
+  one run's output contains `b-a2d` with lead term `b`.
+
+The library's `setMonomialOrder` already rejects the same orders and returns
+false.  Item 1's shape exactly, reached through file input.
+
+### `setMonomialOrderInternal` asserts on caller input
+
+`mathicgb.cpp:455-457` asserts that the base order is valid and that
+`gradingsSize % varCount() == 0`, the second being a documented precondition
+of the public interface.  With base order 7, or 3 gradings for 2 variables,
+Debug aborts and Release returns true and computes.  Should be checks that
+return false like the ones after them.
+
+### Exponents near `INT_MAX` overflow
+
+The parser accepts exponents up to `INT_MAX` and nothing checks products.
+`mgb sig` on `a2147483647d-b, a2147483647-c` gives UBSan signed overflow at
+`MonoMonoid.hpp:1862` (`computeDegree`, via `SigPolyBasis.cpp:72`) and
+`MonoMonoid.hpp:821` (`compare`, via `SigPolyBasis.cpp:91`).  Probably the
+same in `MonoMonoid::multiply`, not shown.  What the fix should be -- reject
+exponents whose products could overflow, or check on multiply -- is a
+decision, and the cost of a check in `multiply` wants measuring.
+
+### Smaller reader defects
+
+- **EOF printed as `'\377'`.**  `MathicIO.hpp:525` casts `EOF` to `char`, so
+  `101 2 1 1 1 1 ` ends `... but got '\377'.`
+- **Negative module components wrap.**  `a<-1>` in `-module` input is
+  accepted and written back as `a<4294967295>` (`MathicIO.hpp:567`).
+- **"a positive integer"** is `Scanner.hpp:229`'s message for unsigned
+  fields, which accept 0.
+- **An unbalanced quote**: `ERROR: Could not read input file "nosuch.ideal`
+  (`GBAction.cpp:74`, `SigGBAction.cpp:67`).
+
+### `PrimeField`'s bound, stated wrongly and guarded loosely
+
+- For the legacy `PolyRing`, the "too large" error at `PrimeField.hpp:210-215`
+  says "The largest supported modulus is 4294967296".  That is 2^32, which is
+  composite; the largest usable prime is 4294967291.  Reproduced with `mgb gb`
+  on modulus 4294967297.
+- `checkModulusIsPrime<T>` (`PrimeField.hpp:119-127`) accepts any integer
+  type, but `isPrime` is exact only to 2^32 and above that `modularPower`
+  overflows, guarded by a Debug assert alone.  Every current caller is safe
+  only because it range-checks first or builds a `PrimeField` first.  A range
+  check inside the template would make the next caller safe too.
+
+### Decision: should `-reducer` reject unknown codes?
+
+`-reducer 99` and `-reducer 0` quietly run the default (`Reducer.cpp:113`),
+where `-divisorLookup` and `-monomialTable` reject unknown codes since PR #85.
+Item 8 kept the fall-through deliberately, as a behaviour change outside its
+scope; this group is the natural place to reverse that, if it is to be
+reversed.
+
+## [OPEN] 34. A structurally corrupt matrix file segfaults `mgb matrix`
+
+Items 16 to 18 validated the modulus.  Nothing validates the structure:
+`SparseMatrix::read` asserts at `SparseMatrix.cpp:553` that the row sizes sum
+to `entryCount`, reads `colCount` at `:500` and discards it as
+`[[maybe_unused]]`, so column indices are never checked, and
+`QuadMatrix::read` checks that the four quadrants agree only in
+`debugAssertValid`.  Hand-made files:
+
+| file | Debug | Release |
+|---|---|---|
+| `over.brmat`, row sizes exceed `entryCount` | abort at `SparseMatrix.cpp:553` | **SIGSEGV** |
+| `q_rows.qmat`, `topRight` has 0 rows | abort at `QuadMatrix.cpp:31` | **SIGSEGV** |
+| `q_col.qmat`, `bottomLeft` column 5 with 1 pivot | abort at `F4MatrixReducer.cpp:197` | **SIGSEGV** |
+| `q_mod.qmat`, quadrant moduli 101 and 103 | abort at `QuadMatrix.cpp:364` | exits 0 using the top-left modulus |
+| `bigcol.brmat`, column index 3e9 | killed | killed, presumably out of memory |
+
+The three segfaults were rechecked against a Release build.  The moduli case
+already has a `todo` at `QuadMatrix.cpp:362-367` asking for the asserts to
+become a thrown error.
+
+The fix is item 18's rule again, in the place item 18 put the modulus check:
+`SparseMatrix::read` checks row sizes against `entryCount` and every column
+index against `colCount`, and `QuadMatrix::read` checks that its quadrants'
+row and column counts and moduli agree, each throwing through the existing
+error path, with tests beside PR #83's and PR #82's.
+
+A lead to check in the same PR: `mgb matrix x.rbrmat` registers the
+extension and then refuses it with "Unknown input file extension".
+
+## [OPEN] 35. `-threadCount`: unvalidated, and ignored by two of three actions
+
+### It crashes above 65536 and wraps above 2^31
+
+```
+$ mgb gb cyclic5 -threadCount 65536; echo $?    # 0
+$ mgb gb cyclic5 -threadCount 65537; echo $?    # Segmentation fault, 139
+```
+
+Bisected: 65536 works, 65537 crashes, in Debug and Release.  The `.gb` is
+written first; ASan puts the crash in `libtbbmalloc` under
+`tbb::r1::terminate(task_arena)`, from `~task_arena` in `~CommonParams`.  Values
+of 2^31 and above wrap negative through `numThreads(int)` and silently mean
+"automatic" (`CommonParams.cpp:64`).  The library does the same:
+`setMaxThreadCount(100000)` segfaults, through the `int(conf.maxThreadCount())`
+cast at `mathicgb.cpp:899`, and Macaulay2's `groebner.cpp:814` passes its
+user's thread count straight through.  The trigger is inside TBB, but
+`mtbb::numThreads` (`mtbb.hpp:58`) is the one place both paths share, so it is
+where to clamp.  Check M2's use before choosing between clamping and
+rejecting.
+
+### `matrix` and `sig` ignore it
+
+Only `GBAction.cpp:111` runs its work inside `mParams.mTaskArena->execute`.
+Counting `clone` calls under `strace -f`:
+
+| command | threads created |
+|---|---|
+| `mgb gb cyclic5 -reducer 26 -threadCount 1` | 0 |
+| `mgb matrix h8-1.qmat -threadCount 1` | 16, every core |
+
+So `mgb matrix` always runs at TBB's default, and as a side effect its
+`.brmat` row order changes from run to run even at `-threadCount 1` -- the
+same set of rows in a different order; the `.rbrmat` is always identical.
+That was the only apparent Debug-vs-Release output difference in the pass.
+
+`mgb sig` is serial whatever the value, so the option it advertises does
+nothing.  Decision: run `sig` in the arena anyway, which changes nothing
+today, or stop offering it the option, as PR #86 did for `-monomialTable`.
+
+The help's "choose the optimal number of threads" for 0 is item 21's claim,
+and belongs with that item, not here.
+
+## [OPEN] 36. Statistics that are wrong
+
+The same family as items 20 and 28: numbers and names `mgb` prints without
+being asked, which are false.
+
+- **`S-pairs reduced:` is always 0.**  `mSPolyReductionCount`
+  (`ClassicGBAlg.cpp:115`, printed at `:505`) has never been incremented, by
+  `git log -G`, since the initial commit.  It is also the denominator of the
+  next line, which therefore reads `Rel.prime sp eliminated: 128 ?/0% of late
+  eliminations`.
+- **Reducer names that cannot be told apart.**  `-reducer 25` and `26` both
+  print `F4 reducer` (`F4Reducer.cpp:322`); `-reducer 10` and `11` both print
+  `t-tree (fi)-packed`, because `ReducerPack` and `ReducerPackDedup` share the
+  suffix.
+- **`mgb sig -reducer 26` reports `F4 reducer`**, but every signature
+  reduction goes to the classic fallback, `mFallback`
+  (`F4Reducer.cpp:124,314`).  It also rejects p = 65537 as "too large for the
+  F4 matrix reducer", though F4 never runs in `sig`.
+- **Memory figures that are placeholders.**  `sig`'s `Signatures:` row
+  (`SignatureGB.cpp:691`) prints `R->getMemoryUse()`, the ring's, and
+  `PolyRing.hpp:252` returns 0, so it always reads `0B`.
+  `F4Reducer::getMemoryUse` returns 0 under `@todo: implement`.
+- **`sig`'s early-exit statistics are unreachable.**  In
+  `SignatureGB.cpp:95-114` the `break;` precedes the "Early exit statistics"
+  block, since e1e4933 in 2013, so `-breakAfter` stops `sig` silently.
+
+## [OPEN] 37. CLI help, option semantics and the man page, second pass
+
+Item 8's and item 6's subject again.
+
+### Help that says the wrong thing
+
+- **"The project name is an optional direct parameter"** (`GBAction.cpp:133`,
+  `SigGBAction.cpp:129`; "the name of the matrix file", `MatrixAction.cpp:146`).
+  It is required -- `mParams(1, 1)` and `mParams(1, max)` -- and `mgb gb` alone
+  says `ERROR: Too few direct options`.  `doc/mgb.1`'s `[project ...]` is wrong
+  both ways: required, and `gb` and `sig` take exactly one.
+- **`-breakAfter`** says "after this many elements have been added", but the
+  code compares the whole basis, inputs included, and stops once it is
+  exceeded (`ClassicGBAlg.cpp:326`): `cyclic5 -breakAfter 1` gives 6
+  elements, and the message says "limit of 1 basis elements" beside them.
+- **`-printInterval`** counts S-pair groups, not reductions: on `cyclic7` it
+  prints 3236 times with `-reducer 21` and 25 times with `-reducer 26`.
+- **A bare `-log`** is documented as enabling all logs (`CommonParams.cpp:29`)
+  but maps to the `default` alias at `:58`: 10 lines on `cyclic5`, where
+  `-log all` gives 212.
+- **`-autoTailReduce`** says it reduces the non-leading terms of all
+  polynomials; `ClassicGBAlg.cpp:425` skips elements used fewer than 1000
+  times as reducers.  A wording gap, not a bug -- output does change.
+- **`-module`** is called experimental, but with the default `-divisorLookup`
+  of 2, or 4, it fails outright on `examples/module.ideal` with `Inserted
+  duplicate entry into a KD tree` (mathic `KDEntryArray.h:182`); 1 and 3 work.
+  557a3b9 already noted in 2013 that modules do not work with KD-trees.  Either
+  reject the combination or say so.
+
+Decision for `-breakAfter` and bare `-log`: change the help to match the code,
+which is the default, or the code to match the help, which is a behaviour
+change.
+
+### An option `sig` offers and never reads
+
+`-memoryQuantumForReducer` comes from `GBCommonParams`, so `sig` advertises it,
+and only `GBAction.cpp:106` reads it -- item 19's shape.  Within `gb`, only F4
+uses it; `TypicalReducer::setMemoryQuantum` is `(void)quantum;`, which is
+item 38's.
+
+### The man page
+
+- FILES: `sig` always writes `project.stats`, even without `-outputResult`
+  (`SigGBAction.cpp:96`), and `matrix` also reads `.brmat`, writes `.pbm`
+  images, and writes `project.out.rbrmat` when its result differs from an
+  existing `.rbrmat` (`MatrixAction.cpp:84-130`).  None of that is listed.
+- `mgb help logs` works, and neither the man page nor `mgb help` mentions it.
+
+### Strings
+
+- `mathicgb.h:256` refers to a "-logs command line parameter"; it is `-log`.
+- "comma-seperated" (`HelpAction.cpp:35`), "Buchberger's. algorithm"
+  (`ClassicGBAlg.cpp:27`), "To enabled all logs".
+- The library's "Grobner" strings, `ClassicGBAlg.cpp:328,631` and
+  `SignatureGB.cpp:656`, are still there.  Item 8 says "see the note below"
+  about them, and there is no such note: this is it.  They are printed by
+  `mgb`, so they go with the tool's other strings.
+- `mgb help`'s `sig` line lacks its final period (`SigGBAction.cpp:133`), and
+  `version` reads "Print Mathicgb version" where the man page says "the
+  mathicgb version".
+
+## [OPEN] 38. Dead parameters and stale comments, second pass
+
+Items 9, 26 and 30's subject.
+
+### Parameters 33d4394 silenced
+
+The same commit that quieted `queueType` and `SigSPairs`'s reducer:
+
+- `SignatureGB::processSPair(..., pairs)` only asserts on `pairs`.
+- `QuadMatrixBuilder`'s constructor takes `ring` and discards it.
+- `createCol` discards `top` and `bottom` (`QuadMatrixBuilder.cpp:58`).
+- `TypicalReducer::setMemoryQuantum` discards `quantum`.
+
+Also dead: `//mic::IntegerParameter mTermOrder;` (`GBAction.hpp:37`),
+`if (tracingLevel >= 2 && false)` (`F4Reducer.cpp:292`), and
+`MonoProcessor::setSchreyering(bool value)`, which sets `mSchreyering = true`
+whatever it is given (`MonoProcessor.hpp:43`, clang warns 23 times).  It has no
+callers here or in the M2 engine, so it is latent; the public
+`GroebnerConfiguration::setSchreyering` is a different function and is right.
+Check M2 before removing any of these, per usual.
+
+`gb-test.cpp:45` takes `nonSingularReductions` and never checks it, so the
+test table's column for it asserts nothing -- a small hole in the tests rather
+than dead code, but found by the same warning.
+
+### Comments item 9's pass missed
+
+- `stdinc.h:74-77` defines `DEBUG` because "lots of code assumes" it.  Nothing
+  in `src/` reads `DEBUG`.
+- `stdinc.h:130-145` justifies its `make_unique` overloads by "MSVC does not
+  have variadic templates".
+- `mathicgb.h:603-606` allows that the header "may be compiling without C++11"
+  -- in a header that uses `constexpr` at `:162`.
+- `src/test/Range.cpp:119` has a gcc 4.7.3 note, the test-side twin of the one
+  fab6684 removed.
+- `ReducerPack.cpp:148`, `ReducerPackDedup.cpp:192` and
+  `ReducerHashPack.cpp:133` justify code by "MSVC debug mode".
+
+Each wants item 9's per-comment judgement, not a sweep.
+
+### Warnings
+
+- `-Wpedantic`, Release: "extra ';'" at `mathicgb.cpp:399,626,627`, where
+  `MATHICGB_IF_DEBUG(...);` leaves a stray `;` when the macro is empty.
+- `-Wunused-parameter`, all from 2013: `MonoMonoid.hpp:1878` (`debugHashValid`,
+  whose check is commented out; 69 reports under GCC Debug), `LogDomain.hpp:298`
+  and, clang only, the `MATHICGB_IF_STREAM_LOG` sites at `SPairs.cpp:96`,
+  `SignatureGB.cpp:186,203`, `ClassicGBAlg.cpp:199` and
+  `F4MatrixReducer.cpp:731,743`.
+
+## [OPEN] 39. Build and packaging, second pass
+
+### `configure` fails under a POSIX shell
+
+`configure.ac` compares with `test ... ==` at lines 120, 129, 133, 134, 137,
+142 and 172.  `==` is a bashism; it works only because `configure`
+re-executes itself under bash when it can.
+
+```
+$ CONFIG_SHELL=/bin/dash /bin/dash ./configure
+test: x: unexpected operator
+configure: error: invalid value  for with_tbb.
+```
+
+and `invalid value no` with `--without-tbb`.  Five sites are from 2013; 133
+(8b76af55), 142 (fd7015f4) and 172 (502fcf42) came in this cleanup.  `=` in
+all seven.
+
+### `ctest` from the top of a cmake build finds no tests
+
+`include(CTest)` is only in `src/CMakeLists.txt:74`, so there is no top-level
+`CTestTestfile.cmake`: `ctest` in the build directory says `No tests were
+found!!!`, and in `src/` passes 254/254.  CI does not notice because it runs
+`src/mathicgb-unit-tests` directly.  Predates v1.4.  The fix adds
+`enable_testing()` at the top level and must keep `src/`'s `include(CTest)`,
+because Macaulay2 `add_subdirectory`s `src/` directly and its own
+`ctest -R unit-tests` runs our tests through it.
+
+### The two `.pc` files differ again
+
+`configure.ac:173` adds `$DEBUG_CFLAGS` to `PC_CFLAGS`, since item 13;
+`CMakeLists.txt:76-81` sets `PC_CFLAGS` only for no-TBB.  So a cmake Debug
+build's `mathicgb.pc` lacks `-DMATHICGB_DEBUG`, and item 5's byte-identical
+files have drifted.  cmake consumers get the flag through the target anyway.
+Limited impact: every `#ifdef MATHICGB_DEBUG` checked guards assertions and
+adds no data member.
+
+### The tarball omits `examples/`
+
+`doc/mgb.1:59-62` sends readers to "the *examples* directory of the
+distribution", and `EXTRA_DIST` (`Makefile.am:75`) does not ship it.  Also
+missing, by `tar tzf` against `git ls-files`: `doc/description.txt`,
+`doc/slides.pdf`, `src/test/pict.in`, `monoidPict.in` and `monoidPict.seed`.
+
+### Leftovers
+
+- `Makefile.am:103-104` forces `-O0` on `src/test/MonoMonoid.o` and `Range.o`
+  to stop "g++ 4.8.2 from crashing ... Ubuntu 14.04.1" (dc58c98), and still
+  applies it.  cmake builds both at `-O2` with GCC 13 and clang 18.
+  `test_LIBS=` at `:109` is dead too.
+- `.gitignore:40-46` (`deb/ debnoass/ pro/ rel/ relass/`) were
+  `make-Makefile.sh`'s build directories, gone with item 11.
+- `libs/.gitignore` (`gtest/`) is the only file in `libs/`, left from the gtest
+  download 0661872 removed.
+- `replace` (2012) seds `src/*.cpp src/*.h`, which has matched only
+  `mathicgb.cpp` and `mathicgb.h` since the sources moved.  `fixspace` (2012)
+  is superseded by `.editorconfig` and the style job, and would break
+  `Makefile.am`'s recipe tabs.
+- `.editorconfig-checker.json` still excludes `^build/`.
+- `.gitignore` misses outputs `mgb` writes: `*.syz` and `*.pbm`.
+
+### Leads, not verified
+
+- `cmake_minimum_required(VERSION 3.12)` is probably too low:
+  `FetchContent_MakeAvailable` needs 3.14 and CI's `cmake -B. -S..` 3.13.
+  Nothing older than 3.14.4 was available to test; 3.14.4 and 4.4.3 work.
+- `$<INSTALL_INTERFACE:include>` in `src/CMakeLists.txt` ignores
+  `CMAKE_INSTALL_INCLUDEDIR`.  It matters only for exported targets, which
+  Macaulay2 does export.
+- `.gitattributes`' `*.in -text` and the editorconfig-checker's `\.in$`
+  exclusion, meant for the PICT files, also catch `mathicgb.pc.in`.
+- The `--with-tbb` help at `configure.ac:113-117` and `doc/description.txt`
+  still carry Cygwin/TBB claims "last checked March 2013".
+- The new file-writing tests (`CFile`, `QuadMatrix`, `SparseMatrix`) leave
+  their `.tmp` behind if an assertion fails before `std::remove`, and would
+  fail in a read-only working directory.
+
+## For the release, not for a PR
+
+Recorded from the second pass for when the soversion is decided, since that
+decision waits for the release.
+
+- **`ClassicGBAlgParams` changed layout without changing any symbol.**
+  9882735 removed `sPairQueueType` from the struct, which is in an installed
+  header and is passed by value to `computeGBClassicAlg` and
+  `computeModuleGBClassicAlg`.  Their mangled names do not change, so a binary
+  built against the v1.4 header still links, and the library then reads
+  `breakAfter` and every later field from the wrong offset -- the silent break
+  #96 renamed `basisParseFromString` to avoid.  The other signatures changed
+  this cycle (`SigPolyBasis`, `SigSPairs`, `SignatureGB`) change their
+  mangled names and so fail at link time instead.  Macaulay2 does not use
+  `ClassicGBAlgParams`.
+- **The soversion lives in two places.**  `configure.ac:69` and
+  `CMakeLists.txt:55-57`, and nothing beside either points at the other.
+  Item 4 asked for a line in `configure.ac:1`'s "also update version in
+  CMakeLists.txt" note; a87f9c7 did not add it.
+- **Macaulay2's Debug check** (`e/CMakeLists.txt:17`) is `CMAKE_BUILD_TYPE
+  MATCHES "Debug"`, which also matches `RelWithDebInfo`, where our target's
+  `$<CONFIG:Debug>` does not.  In that configuration M2's engine gets
+  `MATHICGB_DEBUG` and the mathicgb target does not.  Predates this cycle,
+  affects only the inline assert in `appendExponent`, and is M2's to change.
 
 ## Considered and declined
 
