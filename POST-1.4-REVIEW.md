@@ -59,11 +59,12 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 22 | dead store in `setSPairGroupSize`, in two files | **DONE** — PR #88, and the second file is gone |
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | **DONE** — PR #89 |
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
-| 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | open |
+| 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | **DONE** — PR #90, by checking before the `Pimpl` exists; the pointers stay raw |
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
 | 27 | the S-pair queue choice is dead, and restoring it is not worth it | open — delete the option |
 | 28 | `mgb sig` reports its S-pair queue type as `todo` | open |
 | 29 | `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct | open -- low priority, reachable only through allocation failure |
+| 30 | `SigSPairs` takes a reducer it has not stored since 2021 | open |
 
 ---
 
@@ -1386,7 +1387,7 @@ unless `--without-tbb` is explicit, is its own question.  Same family as the
 review's other findings where the build quietly does something other than what
 was asked.
 
-## [OPEN] 22. Dead store in `setSPairGroupSize`, in two files
+## [DONE] 22. Dead store in `setSPairGroupSize`, in two files
 
 Found 2026-08-31 while chasing item 10's `yang1` baseline.
 
@@ -1592,7 +1593,9 @@ Underneath the warning, the same macro also asserts before it throws, at 20
 sites in the public streaming interface.  That is item 18's subject, not this
 one's: fixing the warning does not change the abort, and the two are separable.
 
-## [OPEN] 25. The `Pimpl` pointers are raw, and two constructors get it wrong
+## [DONE] 25. The `Pimpl` pointers are raw, and two constructors get it wrong
+
+PR #90, commits c061f6e and efb29a4.
 
 Found 2026-09-18 while doing item 18's part 2.
 
@@ -1648,19 +1651,45 @@ direct construction of `mgbi::StreamStateChecker`, which nothing but a test
 does, reaches it.  Before ecd68c4 the assert in `MATHICGB_STREAM_CHECK` fired
 first and hid it in Debug; in Release it has been a double free all along.
 
-### One fix for both
+### The fix: check before the `Pimpl` exists, not `unique_ptr`
 
-`std::unique_ptr<Pimpl>` for all three members.  The try/catch in
-`StreamStateChecker` then goes away rather than gets corrected, the
-`GroebnerConfiguration` leak goes away without anyone having to remember a
-cleanup path, and the `delete mPimpl` in each destructor goes with it.
-`Pimpl` is a complete type at every point that matters -- all three are
-defined in `src/mathicgb.cpp` alongside their users -- so the destructor
-requirement is already met.
+This section proposed `std::unique_ptr<Pimpl>` for all three members.  That
+was written, and dropped, for two reasons.
 
-A one-line `throw;` in `StreamStateChecker` was written, tested and then
-declined: it corrects the unreachable half, leaves the reachable one, and the
-`unique_ptr` conversion would immediately undo it.
+**`unique_ptr` alone breaks Debug.**  `GroebnerConfiguration::Pimpl::~Pimpl`
+asserts `debugAssertValid()`, which requires a nonzero modulus.  The leak was
+the only reason a `Pimpl` holding a rejected modulus had never been destroyed;
+once `unique_ptr` freed it, `RejectsCompositeModulus` aborted on
+`Conf(0, 3, 1)`.
+
+**The header says why the members are raw.**  `mathicgb.h:573-579`, above the
+inline `appendExponent`, keeps these classes free of standard library types
+so that a caller and the library built against different STLs agree on the
+layout.  `unique_ptr` is pointer-sized everywhere in practice, but the change
+went against the header's own rule for no gain once the real fix was in.
+
+The real fix moves each prime check into its `Pimpl`'s own constructor.  A
+`Pimpl` whose constructor throws is never completed and never destroyed, and
+the new-expression frees its storage, so neither outer constructor has a
+cleanup path left.  `StreamStateChecker`'s try/catch goes.  `mathicgb.h` is
+unchanged.
+
+The two checks also reported differently, and the same message was built by
+hand in `MathicIO::readBaseField` and `SparseMatrix::read` as well.  All four
+now call `checkModulusIsPrime`, beside `isPrime` in `PrimeField.hpp`.  It is a
+template so that `readBaseField`'s signed `long` still reports `-7` as itself.
+The checker's composite-modulus error became a `MathicException`, like
+`GroebnerConfiguration`'s; its protocol errors are still `invalid_argument`.
+
+Verified under ASan: master leaks 5 x 120 bytes in `RejectsCompositeModulus`
+and double frees on `StreamStateChecker(4, 2, 1)`; the branch does neither.
+The regression test is `StreamCheckerRejectsCompositeModulus`.  Macaulay2's
+`groebner.cpp` builds its `IdealStreamChecker`s after a `GroebnerConfiguration`
+has already validated the same modulus, so the exception-type change cannot
+reach it.
+
+The one-line `throw;` in `StreamStateChecker`, written and declined before
+this, stays declined for the same reason: it fixed only the unreachable half.
 
 ## [OPEN] 26. `SigPolyBasis` takes a monomial table code it has never used
 
@@ -1895,6 +1924,29 @@ way out of the `Pimpl`'s allocation -- a file-local helper in the
 mem-initializer that does `new Pimpl(conf)` inside a `try`, and on failure
 `delete[]`s the already-built array and rethrows.  Nothing in the header
 changes.
+
+## [OPEN] 30. `SigSPairs` takes a reducer it has not stored since 2021
+
+Found 2026-09-25 while doing item 27.
+
+`SigSPairs`'s constructor takes `Reducer* reducer` (`SigSPairs.hpp:36`,
+`SigSPairs.cpp:19`) and discards it with `(void)reducer;`.  The member it fed
+is commented out in both files:
+
+```cpp
+  //  mReducer(reducer),        // SigSPairs.cpp:31
+  //  Reducer* mReducer;        // SigSPairs.hpp:129
+```
+
+`e6996a3`, the 2021 bulk backport from Macaulay2/M2#2160, commented out both
+lines.  `33d4394`, "Fix unused parameter compiler warnings" (2026-02-28), then
+added the `(void)` cast -- the same commit that quieted `queueType`.
+`SignatureGB.cpp:58` still passes `reducer.get()`, its only call site.
+
+The same pattern as items 26 and 27: a value threaded in and thrown away.
+The fix is the same too -- drop the parameter, its argument, and the two
+commented-out lines.  Left out of item 27's PR because it is not part of the
+S-pair queue option.
 
 ## Considered and declined
 
