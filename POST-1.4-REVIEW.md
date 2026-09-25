@@ -63,6 +63,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
 | 27 | the S-pair queue choice is dead, and restoring it is not worth it | open — delete the option |
 | 28 | `mgb sig` reports its S-pair queue type as `todo` | open |
+| 29 | `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct | open -- low priority, reachable only through allocation failure |
 
 ---
 
@@ -1847,6 +1848,53 @@ Numbered after item 27 although it should be done long before it: from here on
 new items are appended rather than inserted, so item 27 keeps the number it
 has.  Reading order is not priority order past item 25 -- the table's notes
 carry that.
+
+## [OPEN] 29. `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct
+
+Found 2026-09-25 while doing item 25.
+
+`GroebnerInputIdealStream`'s constructor (`src/mathicgb.cpp:639`) allocates
+two things in its mem-initializer list, in declaration order:
+
+```cpp
+  mExponents(new Exponent[conf.varCount()]),
+  mPimpl(new Pimpl(conf))
+```
+
+`mExponents` is `Exponent* const`, a raw array.  If `new Pimpl(conf)` throws,
+the constructor never completes, the destructor's `delete[] mExponents` never
+runs, and the array leaks -- the same defect as item 25's
+`GroebnerConfiguration` leak, one member over.  Item 25 left `mExponents`
+alone, since it was not one of the `Pimpl` pointers that item covered, and
+its fix -- rejecting bad input before the `Pimpl` exists -- does not reach
+this: nothing here is bad input.
+
+Unlike item 25's leak this one is not reachable through bad input, only
+through allocation failure.  Nothing on the `Pimpl`'s construction path throws
+on a configuration that `GroebnerConfiguration` has already accepted.
+`PrimeField` rejects a modulus above `maxCharacteristic()`, but
+`GroebnerConfiguration(4294967291u, 3, 1)`, the largest 32-bit prime, then
+constructs a stream cleanly under ASan.  What is left is `bad_alloc` from the
+ring, basis or monomial allocation after the `varCount`-sized array succeeded.
+Low priority for that reason.
+
+The obvious fix, `std::unique_ptr<Exponent[]>`, is the wrong one here.
+`appendExponent` is inline in `mathicgb.h:581` so that it costs nothing per
+exponent, which means the caller's compiler indexes `mExponents` directly, and
+the comment above it says why that member is raw: "the compiler for the
+caller and the library must agree on the memory layout of the object ... this
+way allows the library and the caller to use different implementations of the
+STL."  A `unique_ptr` there would put the caller's `unique_ptr::operator[]`
+against the library's layout of it -- the same reason item 25 kept the
+`Pimpl` pointers raw.  Reordering the members so that `mPimpl`
+comes first would fix the leak too, but moves `mExponents`'s offset, which is
+an ABI break for every caller that inlined `appendExponent`.
+
+What keeps both the layout and the raw pointer is freeing the array on the
+way out of the `Pimpl`'s allocation -- a file-local helper in the
+mem-initializer that does `new Pimpl(conf)` inside a `try`, and on failure
+`delete[]`s the already-built array and rethrows.  Nothing in the header
+changes.
 
 ## Considered and declined
 
