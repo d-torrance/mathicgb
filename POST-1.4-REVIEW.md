@@ -60,11 +60,12 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 23 | a UBSan job, and the 325 misaligned-access reports behind it | **DONE** — PR #89 |
 | 24 | 19 clang warnings in `mathicgb.cpp`, visible only since the matrix grew | **DONE** — PR #85, with item 18's part 2 |
 | 25 | the `Pimpl` pointers are raw: a reachable leak and an unreachable double free | **DONE** — PR #90, by checking before the `Pimpl` exists; the pointers stay raw |
-| 26 | `SigPolyBasis` takes a monomial table code it has never used | open |
-| 27 | the S-pair queue choice is dead, and restoring it is not worth it | open — delete the option |
-| 28 | `mgb sig` reports its S-pair queue type as `todo` | open |
+| 26 | `SigPolyBasis` takes a monomial table code it has never used | **DONE** — PR #91 |
+| 27 | the S-pair queue choice is dead, and restoring it is not worth it | **DONE** — PR #92, the option is deleted |
+| 28 | `mgb sig` reports its S-pair queue type as `todo` | **DONE** — PR #93 |
 | 29 | `GroebnerInputIdealStream` leaks `mExponents` if its `Pimpl` fails to construct | open -- low priority, reachable only through allocation failure |
 | 30 | `SigSPairs` takes a reducer it has not stored since 2021 | open |
+| 31 | `basisParseFromString` leaks the ring of every basis it parses | open -- test helper only |
 
 ---
 
@@ -1691,7 +1692,11 @@ reach it.
 The one-line `throw;` in `StreamStateChecker`, written and declined before
 this, stays declined for the same reason: it fixed only the unreachable half.
 
-## [OPEN] 26. `SigPolyBasis` takes a monomial table code it has never used
+## [DONE] 26. `SigPolyBasis` takes a monomial table code it has never used
+
+PR #91, commit 3cd8265.  Checked first that Macaulay2 does not use
+`SigPolyBasis`; `mgb sig` output is byte-identical for every `-monomialTable`
+code.
 
 Found 2026-09-18 while doing item 19.
 
@@ -1720,7 +1725,9 @@ ever bring it back -- `-monomialTable` reaches `Hsyz` directly without it.  The
 wanted them back; that is no longer expected, so they go with the option, under
 that item.  This item is `monTableType` alone.
 
-## [OPEN] 27. The S-pair queue choice is dead, and only mathic can bring it back
+## [DONE] 27. The S-pair queue choice is dead, and only mathic can bring it back
+
+PR #92, commits 9882735 and 44dd16b.
 
 Found 2026-09-18 on starting item 19, which had assumed `-spairQueue` was
 merely unvalidated.
@@ -1840,14 +1847,32 @@ That also demotes the measurement above from a decision input to curiosity: a
 result showing `Heap` sometimes wins would still not be shippable, so it cannot
 change the answer.
 
-### Until then
+### Deleted
 
-`-spairQueue` is left exactly as it is: accepted, advertised and inert.  It
-stays only because deleting it is a user-visible break that has waited twelve
-years and can wait until this item is actually worked, not because a return is
-expected.
+9882735 removes the option, its help text, and every `queueType` parameter
+behind it -- `ClassicGBAlgParams::sPairQueueType` and the constructors of
+`ClassicGBAlg`, `SignatureGB` and `SigSPairs`.  That took two of the three
+entries in item 26's dead-parameter table.  `-spairQueue` is now rejected as an
+unknown option; output is otherwise byte-identical on `cyclic5` and
+`hilbertkunz1` for both algorithms.
 
-## [OPEN] 28. `mgb sig` reports its S-pair queue type as `todo`
+The test harness's all-pairs table in `gb-test.cpp` lost its `spairQueue`
+column by hand rather than by regeneration.  PICT turned out to be open source
+(MIT, `github.com/microsoft/pict`) and builds on Linux; run on the new
+`pict.in` it also gives 101 rows, so regenerating would only have swapped every
+configuration for a different set of the same size.  44dd16b corrects
+`pict.in`'s claim that PICT is closed-source and Windows-only, and the
+misspelled `allPairsTest` in both files' instructions.
+
+Macaulay2's only reference is the option table of the undistributed
+`MGBInterface.m2`, which passes the flag only when a caller sets
+`"SPairQueue"`.  Doug, 2026-09-25: not a concern.
+
+## [DONE] 28. `mgb sig` reports its S-pair queue type as `todo`
+
+PR #93, commit 87a68de.  `mgb sig` now prints `PairQueue-t-tree (si)`, as
+`mgb gb` does.  No test: the string is mathic's, and nothing tests
+`SPairs::name()` either.
 
 Found 2026-09-18 while comparing `mgb sig`'s statistics before and after
 item 20.
@@ -1947,6 +1972,44 @@ The same pattern as items 26 and 27: a value threaded in and thrown away.
 The fix is the same too -- drop the parameter, its argument, and the two
 commented-out lines.  Left out of item 27's PR because it is not part of the
 S-pair queue option.
+
+## [OPEN] 31. `basisParseFromString` leaks the ring of every basis it parses
+
+Found 2026-09-25 running the whole suite under ASan while doing item 29.
+
+`basisParseFromString` (`src/mathicgb/io-util.cpp:36`) parses a ring and a
+basis from a string, and returns only the basis:
+
+```cpp
+  auto p = MathicIO<>().readRing(true, in);
+  auto& ring = *p.first.release(); // todo: fix leak
+  return make_unique<Basis>(MathicIO<>().readBasis(ring, false, in));
+```
+
+`Basis` holds a reference to its ring, not ownership, so once the
+`unique_ptr<PolyRing>` is released nothing owns the ring.  The comment has said
+so since `bbb09cb`, 2013-05-07, which replaced `Basis::parse` with `MathicIO`.
+
+This is the whole of the suite's ASan leak report, identical on master
+(87a68de) and on item 29's branch: `SUMMARY: AddressSanitizer: 1216 byte(s) leaked in 8
+allocation(s)`.  Two direct leaks of 176 bytes -- one `PolyRing` each, from
+`IO.ideal` (`gb-test.cpp:36`) and `Ideal.readwrite` (`poly-test.cpp:609`) --
+and six indirect ones, the ring's monomial pool blocks and gradings.
+
+Only tests call it -- three sites -- but it is compiled into `libmathicgb`, since
+`io-util.cpp` is a library source in both build systems.
+
+The third caller, `Poly.lead` (`poly-test.cpp:627`), does not leak because it
+works around the defect: it takes ownership itself with
+`std::unique_ptr<const PolyRing> R(I->getPolyRing());`.  So a fix that makes
+the helper own its ring has to change that test at the same time, or it turns
+into a double free.
+
+Test-only, so it affects no user.  Worth fixing because it keeps the suite's
+ASan report from ever being clean: a new leak has to be found by diffing
+against master's report rather than seen outright, which is how item 29's
+check had to be done.  The shape of the fix -- return the ring alongside the basis, or hand ownership to the
+caller the way `Poly.lead` already assumes -- is the decision.
 
 ## Considered and declined
 
