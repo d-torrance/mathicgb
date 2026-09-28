@@ -2143,6 +2143,17 @@ quantum, `growEntryCapacity` takes the branch at `:352-353`
 -- `Block` has no destructor to free it.  At the default quantum of 1,048,576
 this needs a row with over about a million entries: rare, but reachable.
 
+The chain is not all it loses.  `delete oldBlock` also drops the deleted
+block's own index and scalar arrays: `RawVector`'s destructor destroys the
+elements and never `delete[]`s the buffer.  (From reading the code; LSan
+cannot tell those arrays from the chain's, since both come from `:336,342`.)
+
+`SparseMatrix.RowsSpanningBlocks`, added in #97 for the s390x miscompile
+behind Macaulay2/M2#2162, now reproduces this in the suite with no `mgb` run:
+under ASan it is the whole of master's leak report, 442748 bytes in 6505
+allocations from `reserveFreeEntries` (`SparseMatrix.cpp:329,336,342`).  So
+the suite is no longer ASan-clean, as #96 left it, until this is fixed.
+
 ### Null pointer passed to `fwrite` for an empty row
 
 `mgb gb cyclic5 -reducer 26 -storeMatrices 1` under UBSan reports "reference
