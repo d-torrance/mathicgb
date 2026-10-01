@@ -74,6 +74,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 37 | CLI help, option semantics and the man page, second pass | open |
 | 38 | dead parameters and stale comments, second pass | open |
 | 39 | build and packaging, second pass: `configure` under dash, top-level `ctest`, the tarball | open |
+| 40 | make `MATHICGB_DEBUG` a cmake option, not a function of the build configuration | open -- after PR #84 |
 
 Items 32 to 39 come from the second review pass of 2026-09-25, and each is
 meant to be one PR with a commit per finding -- the first round's PRs were
@@ -2557,6 +2558,53 @@ missing, by `tar tzf` against `git ls-files`: `doc/description.txt`,
 - The new file-writing tests (`CFile`, `QuadMatrix`, `SparseMatrix`) leave
   their `.tmp` behind if an assertion fails before `std::remove`, and would
   fail in a read-only working directory.
+
+## [OPEN] 40. `MATHICGB_DEBUG` should be a cmake option, not a configuration
+
+Raised while reviewing PR #84 (the installed CMake package), 2026-10-01, and
+left out of that review as out of scope.
+
+`MATHICGB_DEBUG` changes the layout of installed headers, so it is a property of
+the installed library.  cmake ties it to `$<CONFIG:Debug>`, and that leaves
+#84 with three workarounds:
+
+- `src/CMakeLists.txt` wraps it in `BUILD_INTERFACE`.  An exported
+  `$<CONFIG:Debug>` would be evaluated in the *consumer's* configuration, since
+  on an imported target it consults only `MAP_IMPORTED_CONFIG_<CONFIG>`.  A
+  Release consumer of a Debug-only install would therefore silently lose the define.
+- `mathicgbConfig.cmake` adds it back through `file(GENERATE)`, which needs an
+  intermediate `configure_package_config_file` output.
+- `mathicgb.pc` is likewise generated twice, `configure_file` then
+  `file(GENERATE)`.  The intermediate is named `mathicgb.pc.in` in the build
+  directory, so an in-source build overwrites the template.  Installing a
+  second configuration into the same prefix also overwrites both files.
+
+The autotools build already treats it as an explicit choice
+(`--enable-debug`, item 13).  The cmake equivalent:
+
+```cmake
+set(_mgb_debug_default OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(_mgb_debug_default ON)   # keeps today's behaviour
+endif()
+option(enable_debug "enable mathicgb's assertions (changes the ABI)"
+  ${_mgb_debug_default})
+if(enable_debug)
+  target_compile_definitions(mathicgb PUBLIC MATHICGB_DEBUG)
+  string(APPEND PC_CFLAGS " -DMATHICGB_DEBUG")
+endif()
+```
+
+This works the same way as `MATHICGB_NO_TBB` does now.  It exports with the
+target, needs one `configure_file` for the `.pc` and none for the config, and
+removes the `$<CONFIG>` directories.  The one behaviour change is that with a
+multi-config generator, `--config Debug` alone no longer enables the
+assertions.  That is arguably the point.
+
+Check against Macaulay2: `e/CMakeLists.txt:6` sets `with_tbb` before
+`add_subdirectory(mathicgb)`, and could set `enable_debug` the same way.  That
+would also settle the `RelWithDebInfo` mismatch recorded under "For the
+release" below.
 
 ## For the release, not for a PR
 
