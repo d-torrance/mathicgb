@@ -75,6 +75,7 @@ the comment rewrite looked like part of writing up item 10, and it was not.
 | 38 | dead parameters and stale comments, second pass | open |
 | 39 | build and packaging, second pass: `configure` under dash, top-level `ctest`, the tarball | open |
 | 40 | make `MATHICGB_DEBUG` a cmake option, not a function of the build configuration | open -- after PR #84 |
+| 41 | the autotools build installs no CMake package config | open -- after the release; mirrors memtailor and mathic |
 
 Items 32 to 39 come from the second review pass of 2026-09-25, and each is
 meant to be one PR with a commit per finding -- the first round's PRs were
@@ -2605,6 +2606,53 @@ Check against Macaulay2: `e/CMakeLists.txt:6` sets `with_tbb` before
 `add_subdirectory(mathicgb)`, and could set `enable_debug` the same way.  That
 would also settle the `RelWithDebInfo` mismatch recorded under "For the
 release" below.
+## [OPEN] 41. The autotools build installs no CMake package config
+
+Added 2026-11-09, checked against `origin/master` at 0758d7f (v1.5).  Not a
+finding from either review pass: it came out of a discussion of the Debian
+packages, which build with autotools and so cannot ship
+`mathicgbConfig.cmake`.  Only the CMake build installs it, because
+`mathicgbTargets.cmake` comes from `install(EXPORT)`.  memtailor and mathic
+have the same gap, and the same item is in their notes
+(`~/src/macaulay2/todo/notes/memtailor-post-1.5-nice-to-haves.md` item 5,
+`mathic-post-1.6-nice-to-haves.md` item 8).  Do memtailor first, then mathic,
+then this.
+
+CMake does not care how the file was produced, so autotools can install its
+own `$(libdir)/cmake/mathicgb/mathicgbConfig.cmake` and
+`mathicgbConfigVersion.cmake`:
+
+- **A separate template.**  `cmake/mathicgbConfig.cmake.in` depends on
+  `@PACKAGE_INIT@` and the generated targets file, so it cannot be reused.
+  The autotools one defines `mathicgb::mathicgb` itself, guarded by
+  `if(NOT TARGET ...)`: `IMPORTED_LOCATION`, `IMPORTED_SONAME`,
+  `INTERFACE_INCLUDE_DIRECTORIES`, `INTERFACE_COMPILE_FEATURES cxx_std_17`,
+  and `MATHICGB_DEBUG` in `INTERFACE_COMPILE_DEFINITIONS` when
+  `--enable-debug` was given (item 13 already substitutes it into
+  `mathicgb.pc`).
+- **Dependencies.**  The CMake config prepends its own directory to
+  `CMAKE_MODULE_PATH` and calls `find_dependency` on Threads, Memtailor,
+  Mathic and, when built with TBB, TBB, using the bundled `Find*.cmake`
+  modules.  Autotools ships those only in `EXTRA_DIST`, so it would have to
+  install them into `$(libdir)/cmake/mathicgb/` as well, substitute the
+  `--with-tbb` result, and list the four targets in
+  `INTERFACE_LINK_LIBRARIES`.
+- **The version file** can be static: about ten lines comparing
+  `PACKAGE_FIND_VERSION` with `@PACKAGE_VERSION@`, as `SameMajorVersion`
+  does.
+- **Paths.**  `@libdir@` and `@includedir@` still contain `${exec_prefix}` at
+  configure time, so generate the files at `make` time with a `sed` rule in
+  `Makefile.am`, not through `AC_CONFIG_FILES`.  The result has absolute
+  paths and is not relocatable, which is fine for distributions.  Computing
+  the prefix from `CMAKE_CURRENT_LIST_DIR` is fragile, because the depth from
+  libdir to the prefix varies (`lib` vs `lib/x86_64-linux-gnu`).
+- **Shared vs static.**  Point at the shared library when it is enabled,
+  and fall back to `STATIC IMPORTED` when it is not.
+- **CI.**  Two generators must now agree, so run `cmake/tests/` against an
+  autotools-installed prefix.
+
+Debian, once released: add `usr/lib/*/cmake/mathicgb/*` to the `-dev`
+package's `.install` file.  No Debian patch in the meantime.
 
 ## For the release, not for a PR
 
